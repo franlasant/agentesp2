@@ -1,0 +1,19 @@
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Credenciales y archivos sensibles (NUNCA subir tokens a GitHub)
+config.properties
+.env
+*.token
+
+# Archivos temporales de JADE y NetBeans
+APDescription.txt
+MTPs-Main-Container.txt
+.netbeans/
+nbproject/private/
+.vscode/
+.idea/
+*.iml

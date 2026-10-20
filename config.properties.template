@@ -1,0 +1,6 @@
+# Plantilla de configuración de conexión con DBA Lab (Práctica 2)
+# IMPORTANTE: Copia este archivo como 'config.properties' e introduce tu token personal.
+# No compartas tu token con nadie (cada miembro del grupo debe usar su propio token).
+
+DBA_LAB_URL=http://orca.ugr.es:8080
+DBA_TOKEN=tu-token-personal-aqui
