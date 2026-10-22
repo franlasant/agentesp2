@@ -1,29 +1,40 @@
 package com.mycompany.agentesp2.api;
 
+import com.mycompany.agentesp2.model.RunControl;
+import com.mycompany.agentesp2.model.ThermostatAction;
+import com.mycompany.agentesp2.model.ThermostatState;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
  * Cliente HTTP desacoplado y reutilizable para la API de DBA Lab.
- * Cumple con la especificación de guia-api-dba-lab.md, guia-api-termostato.md y guia-api-grid.md.
+ * Incluye protección en doble capa frente a cierres abruptos del programa:
+ * 1. ShutdownHook de la JVM para cerrar el run al pulsar Stop / Ctrl+C.
+ * 2. Persistencia local en '.active_run_id' para cerrar sesiones huérfanas al reiniciar.
  */
 public class DbaClient {
+
+    private static final Path ACTIVE_RUN_FILE = Paths.get(".active_run_id");
 
     private final HttpClient http;
     private final String baseUrl;
     private final String token;
+    private volatile long currentActiveRunId = -1L;
+    private final AtomicBoolean shutdownHookRegistered = new AtomicBoolean(false);
 
     public DbaClient(String baseUrl, String token) {
         if (baseUrl == null || baseUrl.isBlank()) {
@@ -33,7 +44,6 @@ public class DbaClient {
             throw new IllegalArgumentException("El token de DBA Lab no puede ser nulo ni vacío.");
         }
 
-        // Limpiar posible barra al final de la URL
         String url = baseUrl.trim();
         while (url.endsWith("/")) {
             url = url.substring(0, url.length() - 1);
@@ -44,6 +54,33 @@ public class DbaClient {
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+
+        registerJvmShutdownHook();
+    }
+
+    /**
+     * Registra un gancho de apagado en la JVM para que, si el usuario detiene el programa
+     * antes de que termine (Ctrl+C o cierre de ventana), se cierre automáticamente el run en el servidor.
+     */
+    private void registerJvmShutdownHook() {
+        if (shutdownHookRegistered.compareAndSet(false, true)) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                long runToClose = this.currentActiveRunId;
+                if (runToClose <= 0) {
+                    runToClose = readSavedRunId();
+                }
+                if (runToClose > 0) {
+                    System.out.println("\n[ShutdownHook] Aborto detectado. Cerrando automáticamente el run " + runToClose + " en DBA Lab...");
+                    try {
+                        closeRun(runToClose);
+                        System.out.println("[ShutdownHook] Run " + runToClose + " cerrado correctamente en el servidor.");
+                    } catch (Exception e) {
+                        // Si ya estaba cerrado o expirado, limpiamos el archivo local igualmente
+                        clearSavedRunId();
+                    }
+                }
+            }, "dba-lab-run-closer"));
+        }
     }
 
     /**
@@ -53,7 +90,6 @@ public class DbaClient {
         String url = System.getenv("DBA_LAB_URL");
         String token = System.getenv("DBA_TOKEN");
 
-        // Intentar leer de config.properties local si falta alguna variable de entorno
         if (url == null || token == null) {
             Path configPath = Paths.get("config.properties");
             if (Files.exists(configPath)) {
@@ -82,7 +118,65 @@ public class DbaClient {
     }
 
     // ==========================================
-    // MÉTODOS DE LA API DE DBA LAB
+    // MÉTODOS DE ALTO NIVEL (TIPADOS CON DTOs)
+    // ==========================================
+
+    /**
+     * Busca automáticamente el ID del primer reto disponible para el tipo de entorno indicado.
+     */
+    public long findChallengeIdByType(String environmentType) throws DbaException {
+        JSONArray challenges = getChallenges();
+        for (int i = 0; i < challenges.length(); i++) {
+            JSONObject ch = challenges.getJSONObject(i);
+            if (environmentType.equalsIgnoreCase(ch.optString("environmentType"))) {
+                return ch.getLong("id");
+            }
+        }
+        return -1L;
+    }
+
+    /**
+     * Inicia un run y devuelve directamente el objeto de control tipado.
+     * Si quedó un run abierto de una ejecución anterior abortada, lo cierra antes automáticamente.
+     */
+    public RunControl startRunTyped(long challengeId) throws DbaException {
+        JSONObject response = startRun(challengeId);
+        return RunControl.fromJson(response);
+    }
+
+    /**
+     * Obtiene los parámetros estáticos iniciales del termostato (límites y objetivo) en un objeto ThermostatState.
+     */
+    public ThermostatState initThermostatState(long runId) throws DbaException {
+        JSONObject limitsJson = getPerception(runId, "thermostat.limits");
+        JSONObject targetJson = getPerception(runId, "thermostat.target");
+        ThermostatState state = ThermostatState.fromInitialPerceptions(limitsJson, targetJson);
+        trackControlState(state.getControl());
+        return state;
+    }
+
+    /**
+     * Consulta el sensor de temperatura y actualiza directamente el objeto ThermostatState.
+     */
+    public void refreshThermostatTemperature(ThermostatState state) throws DbaException {
+        long runId = state.getControl().getRunId();
+        JSONObject tempJson = getPerception(runId, "thermostat.temperature");
+        state.updateFromTemperatureJson(tempJson);
+        trackControlState(state.getControl());
+    }
+
+    /**
+     * Envía una acción del termostato usando el enum tipado y devuelve el nuevo estado de control.
+     */
+    public RunControl sendAction(long runId, ThermostatAction action) throws DbaException {
+        JSONObject response = sendAction(runId, action.getActionCode());
+        RunControl ctrl = RunControl.fromJson(response);
+        trackControlState(ctrl);
+        return ctrl;
+    }
+
+    // ==========================================
+    // MÉTODOS DE BAJO NIVEL (JSON CRUDO)
     // ==========================================
 
     /**
@@ -113,9 +207,13 @@ public class DbaClient {
 
     /**
      * Inicia una nueva ejecución (run) para un reto específico.
-     * POST /api/v1/runs con {"challengeId": id}
+     * Si existe un run previo registrado localmente que quedó colgado tras abortar el programa,
+     * lo cierra automáticamente antes de iniciar el nuevo.
      */
     public JSONObject startRun(long challengeId) throws DbaException {
+        // 1. Si hay un runId guardado de una ejecución previa abortada (ej. Stop en NetBeans), cerrarlo primero
+        closePreviousOrphanRunIfNeeded();
+
         JSONObject payload = new JSONObject();
         payload.put("challengeId", challengeId);
 
@@ -127,7 +225,10 @@ public class DbaClient {
                 .build();
 
         String body = sendRequest(request);
-        return parseJsonObject(body);
+        JSONObject result = parseJsonObject(body);
+        RunControl ctrl = RunControl.fromJson(result);
+        trackControlState(ctrl);
+        return result;
     }
 
     /**
@@ -190,12 +291,75 @@ public class DbaClient {
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
 
-        String body = sendRequest(request);
-        return parseJsonObject(body);
+        try {
+            String body = sendRequest(request);
+            return parseJsonObject(body);
+        } finally {
+            if (this.currentActiveRunId == runId) {
+                this.currentActiveRunId = -1L;
+            }
+            clearSavedRunId();
+        }
     }
 
     // ==========================================
-    // MÉTODOS AUXILIARES
+    // GESTIÓN DE SESIONES HUÉRFANAS Y ARCHIVO LOCAL
+    // ==========================================
+
+    private void closePreviousOrphanRunIfNeeded() {
+        long previousRunId = readSavedRunId();
+        if (previousRunId > 0) {
+            System.out.println("[DbaClient] Detectado run previo sin cerrar (runId=" + previousRunId + "). Cerrándolo en el servidor...");
+            try {
+                closeRun(previousRunId);
+                System.out.println("[DbaClient] Run previo " + previousRunId + " cerrado con éxito.");
+            } catch (DbaException e) {
+                System.out.println("[DbaClient] El run previo " + previousRunId + " ya no estaba activo (" + e.getErrorCode() + "). Limpiando registro local.");
+                clearSavedRunId();
+            }
+        }
+    }
+
+    private void trackControlState(RunControl ctrl) {
+        if (ctrl == null) return;
+        if (ctrl.isActive() && ctrl.getRunId() > 0) {
+            this.currentActiveRunId = ctrl.getRunId();
+            saveRunId(ctrl.getRunId());
+        } else if (ctrl.isTerminal()) {
+            this.currentActiveRunId = -1L;
+            clearSavedRunId();
+        }
+    }
+
+    private void saveRunId(long runId) {
+        try {
+            Files.writeString(ACTIVE_RUN_FILE, Long.toString(runId), StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+        }
+    }
+
+    private long readSavedRunId() {
+        try {
+            if (Files.exists(ACTIVE_RUN_FILE)) {
+                String content = Files.readString(ACTIVE_RUN_FILE, StandardCharsets.UTF_8).trim();
+                if (!content.isEmpty()) {
+                    return Long.parseLong(content);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return -1L;
+    }
+
+    private void clearSavedRunId() {
+        try {
+            Files.deleteIfExists(ACTIVE_RUN_FILE);
+        } catch (IOException ignored) {
+        }
+    }
+
+    // ==========================================
+    // MÉTODOS AUXILIARES HTTP
     // ==========================================
 
     private String sendRequest(HttpRequest request) throws DbaException {

@@ -8,6 +8,7 @@ target/
 config.properties
 .env
 *.token
+.active_run_id
 
 # Archivos temporales de JADE y NetBeans
 APDescription.txt
