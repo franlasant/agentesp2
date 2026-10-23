@@ -3,6 +3,8 @@ package com.mycompany.agentesp2.api;
 import com.mycompany.agentesp2.model.RunControl;
 import com.mycompany.agentesp2.model.ThermostatAction;
 import com.mycompany.agentesp2.model.ThermostatState;
+import com.mycompany.agentesp2.model.grid.GridAction;
+import com.mycompany.agentesp2.model.grid.GridState;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -169,6 +171,49 @@ public class DbaClient {
      * Envía una acción del termostato usando el enum tipado y devuelve el nuevo estado de control.
      */
     public RunControl sendAction(long runId, ThermostatAction action) throws DbaException {
+        JSONObject response = sendAction(runId, action.getActionCode());
+        RunControl ctrl = RunControl.fromJson(response);
+        trackControlState(ctrl);
+        return ctrl;
+    }
+
+    /**
+     * Inicializa el estado completo de percepción para un run del entorno Grid 2D.
+     * Consulta posición inicial, celda objetivo, bumpers y saldo inicial de energía.
+     */
+    public GridState initGridState(long runId) throws DbaException {
+        JSONObject posJson = getPerception(runId, "grid.position");
+        JSONObject targetJson = getPerception(runId, "grid.target");
+        JSONObject bumpersJson = getPerception(runId, "grid.bumpers");
+        JSONObject energyJson = getPerception(runId, "grid.energy");
+        RunControl ctrl = RunControl.fromJson(posJson);
+        GridState state = GridState.fromInitialPerceptions(posJson, targetJson, bumpersJson, energyJson, ctrl);
+        trackControlState(state.getControl());
+        return state;
+    }
+
+    /**
+     * Refresca los sensores dinámicos de Grid 2D (posición, bumpers y energía).
+     * Nota: 'grid.target' es estático y no cambia a lo largo del reto.
+     */
+    public void refreshGridState(GridState state) throws DbaException {
+        long runId = state.getControl().getRunId();
+        JSONObject posJson = getPerception(runId, "grid.position");
+        state.updatePosition(posJson);
+
+        JSONObject bumpersJson = getPerception(runId, "grid.bumpers");
+        state.updateBumpers(bumpersJson);
+
+        JSONObject energyJson = getPerception(runId, "grid.energy");
+        state.updateEnergy(energyJson);
+
+        trackControlState(state.getControl());
+    }
+
+    /**
+     * Envía una acción de movimiento en Grid 2D usando el enum tipado GridAction.
+     */
+    public RunControl sendGridAction(long runId, GridAction action) throws DbaException {
         JSONObject response = sendAction(runId, action.getActionCode());
         RunControl ctrl = RunControl.fromJson(response);
         trackControlState(ctrl);
