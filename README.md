@@ -2,7 +2,7 @@
 
 Proyecto para la asignatura de **Desarrollo Basado en Agentes (DBA)** de la Universidad de Granada (Curso 2026/2027).
 
-Implementación de agentes inteligentes en **JADE** que interactúan con el laboratorio remoto **DBA Lab** para resolver los retos del **Termostato** y la **Navegación 2D (Grid)**.
+Implementación de un agente inteligente en **JADE** que interactúa con el laboratorio remoto **DBA Lab** para resolver el reto del **Termostato** (control térmico de una cámara frigorífica).
 
 ---
 
@@ -45,10 +45,13 @@ src/main/java/com/mycompany/agentesp2/
 ├── api/
 │   ├── DbaClient.java     # Cliente REST desacoplado para DBA Lab
 │   └── DbaException.java  # Manejo de excepciones y códigos HTTP
-├── termostato/
-│   └── TermostatoAgent.java # Agente JADE para el control de temperatura
-└── grid/
-    └── GridAgent.java     # Plantilla para el reto de Navegación 2D
+├── model/
+│   ├── RunControl.java       # DTO para el objeto control de DBA Lab
+│   ├── RunStatus.java        # Enum para estados del run
+│   ├── ThermostatAction.java # Enum para acciones (on/off)
+│   └── ThermostatState.java  # DTO con estado completo de la cámara
+└── termostato/
+    └── TermostatoAgent.java  # Agente JADE para el control de temperatura
 ```
 
 ---

@@ -12,7 +12,7 @@ public class Main {
 
     public static void main(String[] args) {
         System.out.println("=================================================");
-        System.out.println("   DBA Lab - Práctica 2: Termostato y Grid 2D    ");
+        System.out.println("   DBA Lab - Práctica 2: Termostato              ");
         System.out.println("=================================================");
 
         // 1. Comprobación rápida de conexión y credenciales
