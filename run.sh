@@ -1,9 +1,12 @@
 #!/bin/bash
 # Script de ayuda para compilar y ejecutar agentesp2
 
-MVN_BIN="/snap/netbeans/current/netbeans/java/maven/bin/mvn"
-if ! command -v mvn &> /dev/null; then
-    MVN="$MVN_BIN"
+if command -v mvn &> /dev/null; then
+    MVN="mvn"
+elif [ -x "/usr/lib/netbeans/java/maven/bin/mvn" ]; then
+    MVN="/usr/lib/netbeans/java/maven/bin/mvn"
+elif [ -x "/snap/netbeans/current/netbeans/java/maven/bin/mvn" ]; then
+    MVN="/snap/netbeans/current/netbeans/java/maven/bin/mvn"
 else
     MVN="mvn"
 fi
