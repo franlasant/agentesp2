@@ -118,7 +118,9 @@ public class GridAgent extends Agent {
                 System.err.println("[GridAgent] Aviso al cerrar el run en takeDown(): " + e.getMessage());
             }
         }
-        if ("false".equalsIgnoreCase(System.getenv("JADE_GUI"))) {
+        boolean isPeripheral = "true".equalsIgnoreCase(System.getProperty("JADE_PERIPHERAL_CONTAINER"));
+        boolean isHeadless = "false".equalsIgnoreCase(System.getenv("JADE_GUI"));
+        if (isPeripheral || isHeadless) {
             new Thread(() -> {
                 try {
                     Thread.sleep(200);
@@ -126,7 +128,7 @@ public class GridAgent extends Agent {
                 } catch (Exception ignored) {
                 }
                 System.exit(0);
-            }, "jade-shutdown").start();
+            }, "jade-container-shutdown").start();
         }
     }
 

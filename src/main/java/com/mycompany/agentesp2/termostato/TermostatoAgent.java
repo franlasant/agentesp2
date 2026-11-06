@@ -66,6 +66,18 @@ public class TermostatoAgent extends Agent {
                 System.err.println("[TermostatoAgent] No se pudo cerrar el run: " + e.getMessage());
             }
         }
+        boolean isPeripheral = "true".equalsIgnoreCase(System.getProperty("JADE_PERIPHERAL_CONTAINER"));
+        boolean isHeadless = "false".equalsIgnoreCase(System.getenv("JADE_GUI"));
+        if (isPeripheral || isHeadless) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(200);
+                    getContainerController().kill();
+                } catch (Exception ignored) {
+                }
+                System.exit(0);
+            }, "jade-container-shutdown").start();
+        }
     }
 
     /**

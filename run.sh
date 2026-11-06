@@ -17,6 +17,11 @@ ACTION="${1:-grid}"
 CHALLENGE_ARG="${2:-}"
 
 case "$ACTION" in
+    server|platform)
+        echo "🖥️  Iniciando contenedor principal JADE (Main-Container en localhost:1099)..."
+        echo "💡 Déjalo abierto en esta terminal y lanza los agentes desde otra terminal con: ./run.sh grid 1"
+        $MVN compile exec:java -Dexec.args="server"
+        ;;
     grid)
         echo "🧭 Ejecutando GridAgent (Navegación 2D)..."
         if [ -n "$CHALLENGE_ARG" ]; then
@@ -54,7 +59,7 @@ case "$ACTION" in
         $MVN clean
         ;;
     *)
-        echo "Uso: ./run.sh [grid [reto] | termostato [reto] | test-unit | test | compile | clean]"
+        echo "Uso: ./run.sh [server | grid [1..7] | termostato [reto] | test-unit | test | compile | clean]"
         exit 1
         ;;
 esac
