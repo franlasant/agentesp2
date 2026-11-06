@@ -3,6 +3,8 @@ package com.mycompany.agentesp2.api;
 import com.mycompany.agentesp2.model.RunControl;
 import com.mycompany.agentesp2.model.ThermostatAction;
 import com.mycompany.agentesp2.model.ThermostatState;
+import com.mycompany.agentesp2.model.grid.GridAction;
+import com.mycompany.agentesp2.model.grid.GridState;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -14,7 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -176,6 +181,223 @@ public class DbaClient {
     }
 
     // ==========================================
+    // MÉTODOS DE ALTO NIVEL PARA GRID 2D
+    // ==========================================
+
+    private static final Set<String> REQUIRED_GRID_SENSORS = Set.of(
+            "grid.position", "grid.bumpers", "grid.target", "grid.energy"
+    );
+
+    private static final Set<String> REQUIRED_GRID_ACTIONS = Set.of(
+            "grid.move.north", "grid.move.east", "grid.move.south", "grid.move.west"
+    );
+
+    /**
+     * Devuelve la lista de retos disponibles cuyo environmentType es "GRID_2D".
+     */
+    public List<JSONObject> findGridChallenges() throws DbaException {
+        JSONArray all = getChallenges();
+        List<JSONObject> gridList = new ArrayList<>();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject ch = all.getJSONObject(i);
+            if ("GRID_2D".equalsIgnoreCase(ch.optString("environmentType"))) {
+                gridList.add(ch);
+            }
+        }
+        return gridList;
+    }
+
+    /**
+     * Selecciona un reto GRID_2D sin fijar IDs numéricos en el código, validando sus capacidades.
+     * Soporta:
+     * - null o vacío: devuelve el primer reto GRID_2D anunciado.
+     * - "#1", "#2" o índice 1..N (si no coincide con un ID directo): selecciona el enésimo reto GRID_2D.
+     * - ID exacto anunciado en /challenges o fragmento de nombre/código del reto (ej. "abierto", "vertical").
+     */
+    public JSONObject resolveGridChallenge(String selector) throws DbaException {
+        List<JSONObject> gridChallenges = findGridChallenges();
+        if (gridChallenges.isEmpty()) {
+            return null;
+        }
+
+        JSONObject chosen = null;
+        if (selector == null || selector.isBlank()) {
+            chosen = gridChallenges.get(0);
+        } else {
+            String clean = selector.trim();
+            // 1. Buscar por coincidencia exacta de ID anunciado en /challenges
+            try {
+                long num = Long.parseLong(clean.startsWith("#") ? clean.substring(1) : clean);
+                if (!clean.startsWith("#")) {
+                    for (JSONObject ch : gridChallenges) {
+                        if (ch.getLong("id") == num) {
+                            chosen = ch;
+                            break;
+                        }
+                    }
+                }
+                // 2. Si no coincide con un ID o se prefijó con '#', interpretar como orden (1..N) entre los retos GRID_2D
+                if (chosen == null && num >= 1 && num <= gridChallenges.size()) {
+                    chosen = gridChallenges.get((int) num - 1);
+                }
+            } catch (NumberFormatException ignored) {
+            }
+
+            // 3. Buscar por coincidencia parcial en name / code / title / description
+            if (chosen == null) {
+                String lower = clean.toLowerCase();
+                for (JSONObject ch : gridChallenges) {
+                    String text = (ch.optString("name", "") + " "
+                            + ch.optString("code", "") + " "
+                            + ch.optString("title", "") + " "
+                            + ch.optString("description", "")).toLowerCase();
+                    if (text.contains(lower)) {
+                        chosen = ch;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (chosen != null) {
+            validateGridCapabilities(chosen);
+        }
+        return chosen;
+    }
+
+    /**
+     * Comprueba que el reto anuncia los sensorCodes y actionCodes requeridos para Grid 2D.
+     */
+    public void validateGridCapabilities(JSONObject challenge) throws DbaException {
+        JSONArray sensors = challenge.optJSONArray("sensorCodes");
+        JSONArray actions = challenge.optJSONArray("actionCodes");
+
+        if (sensors != null) {
+            List<String> announcedSensors = new ArrayList<>();
+            for (int i = 0; i < sensors.length(); i++) {
+                announcedSensors.add(sensors.getString(i));
+            }
+            for (String req : REQUIRED_GRID_SENSORS) {
+                if (!announcedSensors.contains(req)) {
+                    throw new DbaException(422, "MISSING_SENSOR_CAPABILITY",
+                            "El reto no anuncia el sensor requerido: " + req);
+                }
+            }
+        }
+
+        if (actions != null) {
+            List<String> announcedActions = new ArrayList<>();
+            for (int i = 0; i < actions.length(); i++) {
+                announcedActions.add(actions.getString(i));
+            }
+            for (String req : REQUIRED_GRID_ACTIONS) {
+                if (!announcedActions.contains(req)) {
+                    throw new DbaException(422, "MISSING_ACTION_CAPABILITY",
+                            "El reto no anuncia la acción requerida: " + req);
+                }
+            }
+        }
+    }
+
+    /**
+     * Lee las 4 percepciones iniciales del entorno Grid 2D (position, target, bumpers, energy)
+     * comprobando control.runStatus tras cada interacción.
+     */
+    public GridState initGridState(long runId) throws DbaException {
+        JSONObject posJson = getPerception(runId, "grid.position");
+        RunControl ctrl = RunControl.fromJson(posJson);
+        trackControlState(ctrl);
+        if (ctrl.isTerminal()) {
+            return new GridState(null, null, null, null, ctrl);
+        }
+
+        JSONObject targetJson = getPerception(runId, "grid.target");
+        ctrl = RunControl.fromJson(targetJson);
+        trackControlState(ctrl);
+        if (ctrl.isTerminal()) {
+            return new GridState(null, null, null, null, ctrl);
+        }
+
+        JSONObject bumpersJson = getPerception(runId, "grid.bumpers");
+        ctrl = RunControl.fromJson(bumpersJson);
+        trackControlState(ctrl);
+        if (ctrl.isTerminal()) {
+            return new GridState(null, null, null, null, ctrl);
+        }
+
+        JSONObject energyJson = getPerception(runId, "grid.energy");
+        GridState state = GridState.fromInitialPerceptions(posJson, targetJson, bumpersJson, energyJson);
+        trackControlState(state.getControl());
+        return state;
+    }
+
+    /**
+     * Refresca los sensores dinámicos del Grid (position, bumpers, energy) tras un movimiento,
+     * verificando después de cada lectura si el run ha pasado a un estado terminal.
+     */
+    public void refreshGridState(GridState state) throws DbaException {
+        long runId = state.getControl().getRunId();
+
+        JSONObject posJson = getPerception(runId, "grid.position");
+        state.updatePosition(posJson);
+        trackControlState(state.getControl());
+        if (state.getControl().isTerminal()) {
+            return;
+        }
+
+        JSONObject bumpersJson = getPerception(runId, "grid.bumpers");
+        state.updateBumpers(bumpersJson);
+        trackControlState(state.getControl());
+        if (state.getControl().isTerminal()) {
+            return;
+        }
+
+        JSONObject energyJson = getPerception(runId, "grid.energy");
+        state.updateEnergy(energyJson);
+        trackControlState(state.getControl());
+    }
+
+    /**
+     * Envía una acción de movimiento cardinal en el Grid.
+     * Regla de idempotencia: si se pierde la respuesta o se recibe 503 (resultado no confirmado),
+     * NO se reintenta el POST automáticamente; se consulta GET /runs/{runId} y GET /runs/{runId}/actions/last.
+     */
+    public RunControl sendGridAction(long runId, GridAction action) throws DbaException {
+        try {
+            JSONObject response = sendAction(runId, action.getActionCode());
+            RunControl ctrl = RunControl.fromJson(response);
+            trackControlState(ctrl);
+            return ctrl;
+        } catch (DbaException e) {
+            if (e.getStatusCode() == 503 || e.getStatusCode() == -1) {
+                System.err.println("[DbaClient] Respuesta incierta (" + e.getErrorCode()
+                        + ") al enviar acción. Auditando estado del run y última acción sin reintentar POST...");
+                return recoverControlAfterUncertainAction(runId, e);
+            }
+            throw e;
+        }
+    }
+
+    private RunControl recoverControlAfterUncertainAction(long runId, DbaException originalError) throws DbaException {
+        try {
+            JSONObject statusJson = getRunStatus(runId);
+            RunControl statusCtrl = RunControl.fromJson(statusJson);
+            trackControlState(statusCtrl);
+
+            try {
+                JSONObject lastActionJson = getLastAction(runId);
+                RunControl lastCtrl = RunControl.fromJson(lastActionJson);
+                trackControlState(lastCtrl);
+                return lastCtrl;
+            } catch (DbaException ignored) {
+                return statusCtrl;
+            }
+        } catch (DbaException recoveryEx) {
+            throw originalError;
+        }
+    }
+
+    // ==========================================
     // MÉTODOS DE BAJO NIVEL (JSON CRUDO)
     // ==========================================
 
@@ -272,6 +494,21 @@ public class DbaClient {
     public JSONObject getRunStatus(long runId) throws DbaException {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/v1/runs/" + runId))
+                .header("Authorization", "Bearer " + token)
+                .GET()
+                .build();
+
+        String body = sendRequest(request);
+        return parseJsonObject(body);
+    }
+
+    /**
+     * Consulta el resultado de la última acción procesada en el run (auditoría e idempotencia).
+     * GET /api/v1/runs/{runId}/actions/last
+     */
+    public JSONObject getLastAction(long runId) throws DbaException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/api/v1/runs/" + runId + "/actions/last"))
                 .header("Authorization", "Bearer " + token)
                 .GET()
                 .build();
