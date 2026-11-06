@@ -225,10 +225,17 @@ public class DbaClient {
             chosen = gridChallenges.get(0);
         } else {
             String clean = selector.trim();
-            // 1. Buscar por coincidencia exacta de ID anunciado en /challenges
+            if (clean.startsWith("#")) {
+                clean = clean.substring(1).trim();
+            }
+
+            // 1. Si es un número entero: dar prioridad absoluta al orden del reto Grid (1, 2, 3...)
             try {
-                long num = Long.parseLong(clean.startsWith("#") ? clean.substring(1) : clean);
-                if (!clean.startsWith("#")) {
+                int num = Integer.parseInt(clean);
+                if (num >= 1 && num <= gridChallenges.size()) {
+                    chosen = gridChallenges.get(num - 1);
+                } else {
+                    // Si el número está fuera del rango 1..N, buscar si coincide con un ID exacto de la base de datos
                     for (JSONObject ch : gridChallenges) {
                         if (ch.getLong("id") == num) {
                             chosen = ch;
@@ -236,14 +243,10 @@ public class DbaClient {
                         }
                     }
                 }
-                // 2. Si no coincide con un ID o se prefijó con '#', interpretar como orden (1..N) entre los retos GRID_2D
-                if (chosen == null && num >= 1 && num <= gridChallenges.size()) {
-                    chosen = gridChallenges.get((int) num - 1);
-                }
             } catch (NumberFormatException ignored) {
             }
 
-            // 3. Buscar por coincidencia parcial en name / code / title / description
+            // 2. Si no es un número o no se encontró, buscar por coincidencia parcial de texto
             if (chosen == null) {
                 String lower = clean.toLowerCase();
                 for (JSONObject ch : gridChallenges) {

@@ -11,6 +11,7 @@ import com.mycompany.agentesp2.model.grid.GridPosition;
 import com.mycompany.agentesp2.model.grid.GridState;
 import jade.core.Agent;
 import jade.core.behaviours.Behaviour;
+import java.util.List;
 import java.util.Optional;
 import org.json.JSONObject;
 
@@ -46,7 +47,17 @@ public class GridAgent extends Agent {
             this.challengeName = challenge.optString("name",
                     challenge.optString("code", "Reto GRID #" + challengeId));
 
-            System.out.printf("[GridAgent] Seleccionado reto ID=%d (%s)%n", challengeId, challengeName);
+            int gridIndex = 1;
+            List<JSONObject> allGrid = client.findGridChallenges();
+            for (int i = 0; i < allGrid.size(); i++) {
+                if (allGrid.get(i).getLong("id") == challengeId) {
+                    gridIndex = i + 1;
+                    break;
+                }
+            }
+
+            System.out.printf("[GridAgent] Seleccionado Reto Grid #%d [ID=%d] (%s)%n",
+                    gridIndex, challengeId, challengeName);
 
             RunControl initialControl = client.startRunTyped(challengeId);
             if (initialControl.isTerminal()) {

@@ -60,6 +60,20 @@ public class Main {
             mode = promptUserModeSelection();
         }
 
+        if (challengeArg == null && !"termostato".equalsIgnoreCase(mode) && System.console() != null) {
+            System.out.print("Introduce el número del reto Grid (1, 2, 3...) [1 por defecto]: ");
+            try {
+                Scanner scanner = new Scanner(System.in);
+                if (scanner.hasNextLine()) {
+                    String line = scanner.nextLine().trim();
+                    if (!line.isEmpty()) {
+                        challengeArg = line;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         boolean useGui = !"false".equalsIgnoreCase(System.getenv("JADE_GUI"));
         String agentSpec;
 

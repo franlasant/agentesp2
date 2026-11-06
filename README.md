@@ -84,11 +84,17 @@ src/
 # 2. Comprobar conexión con DBA Lab y listar retos activos
 ./run.sh test
 
-# 3. Ejecutar el agente de navegación 2D (GridAgent)
-./run.sh grid                     # Primer reto GRID_2D disponible
-./run.sh grid "Campo abierto"     # Selección por nombre
-./run.sh grid "Barrera en U"      # Selección por nombre
-./run.sh grid "#7"                # Selección por orden de reto Grid
+# 3. Ejecutar el agente de navegación 2D (GridAgent) por número de reto (1, 2, 3...)
+./run.sh grid 1                   # Reto 1: Campo abierto
+./run.sh grid 2                   # Reto 2: Muro vertical
+./run.sh grid 3                   # Reto 3: Muro horizontal
+./run.sh grid 4                   # Reto 4: Muro diagonal
+./run.sh grid 5                   # Reto 5: Barrera en U
+./run.sh grid 6                   # Reto 6: Barrera en arco
+./run.sh grid 7                   # Reto 7: Barrera en C
+
+# (Opcional) Ejecución rápida en consola sin ventana de JADE:
+JADE_GUI=false ./run.sh grid 1
 
 # 4. Ejecutar el agente del Termostato (TermostatoAgent)
 ./run.sh termostato
