@@ -21,5 +21,6 @@ nbproject/private/
 
 # Logs de ejecuciones y pruebas
 logs_fase2/
+logs_runs/
 *.log
 

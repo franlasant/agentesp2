@@ -4,7 +4,17 @@ import sys
 import time
 import re
 
-CHALLENGES = [
+FASE1 = [
+    (2, "Fase 1 - 01 - Campo abierto"),
+    (3, "Fase 1 - 02 - Muro vertical"),
+    (4, "Fase 1 - 03 - Muro horizontal"),
+    (5, "Fase 1 - 04 - Muro diagonal"),
+    (6, "Fase 1 - 05 - Barrera en U"),
+    (7, "Fase 1 - 06 - Barrera en arco"),
+    (8, "Fase 1 - 07 - Barrera en C"),
+]
+
+FASE2 = [
     (9,  "Fase 2 - 01 - Corredores horizontales"),
     (10, "Fase 2 - 02 - Corredores verticales"),
     (11, "Fase 2 - 03 - Barrera triangular"),
@@ -18,15 +28,27 @@ CHALLENGES = [
     (19, "Fase 2 - 11 - Obstáculos dispersos B"),
 ]
 
-os.makedirs("logs_fase2", exist_ok=True)
+mode = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
+
+if mode == "fase1":
+    challenges = FASE1
+    title = "FASE 1 (7 RETOS ESTÁNDAR 10x10)"
+elif mode == "fase2":
+    challenges = FASE2
+    title = "FASE 2 (11 RETOS NUEVOS Y COMPLEJOS)"
+else:
+    challenges = FASE1 + FASE2
+    title = "COMPLETA (18 RETOS: FASE 1 + FASE 2)"
+
+os.makedirs("logs_runs", exist_ok=True)
 results = []
 
 print("================================================================================")
-print("   INICIANDO BATERÍA DE PRUEBAS EN VIVO: FASE 2 (11 RETOS NUEVOS DE GRID 2D)   ")
+print(f"   INICIANDO BATERÍA DE PRUEBAS EN VIVO: {title}   ")
 print("================================================================================")
 
-for cid, cname in CHALLENGES:
-    log_path = f"logs_fase2/reto_{cid}.log"
+for cid, cname in challenges:
+    log_path = f"logs_runs/reto_{cid}.log"
     print(f"\n>>> [ID {cid:2d}] Ejecutando: {cname}...")
     start_time = time.time()
     
@@ -39,7 +61,6 @@ for cid, cname in CHALLENGES:
     
     elapsed = time.time() - start_time
     
-    # Parse log for result
     with open(log_path, "r", encoding="utf-8", errors="ignore") as log_file:
         content = log_file.read()
     
@@ -74,10 +95,10 @@ for cid, cname in CHALLENGES:
         "time": f"{elapsed:.1f}s"
     })
     
-    time.sleep(1.5)
+    time.sleep(1.0)
 
 print("\n" + "=" * 80)
-print("                   RESUMEN GENERAL DE LA FASE 2 EN DBA LAB                      ")
+print(f"               RESUMEN GENERAL: {title} EN DBA LAB                ")
 print("=" * 80)
 print(f"{'ID':>4} | {'Nombre del Reto':<35} | {'Estado':<10} | {'Pasos':>6} | {'Energía':<12} | {'Run ID':>6}")
 print("-" * 80)
