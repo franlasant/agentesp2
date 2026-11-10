@@ -8,23 +8,46 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Mapa mental dinámico construido por el agente a partir de sus percepciones locales.
+ * ============================================================================
+ * MEMORIA ESPACIAL DEL AGENTE: Mapa Mental Dinámico (MentalMap)
+ * ============================================================================
  *
- * No asume un tamaño de mundo prefijado (no fuerza 10x10): almacena las celdas de forma
- * dispersa en memoria, adaptándose a cualquier dimensión o coordenada en la Tanda 1 y Tanda 2.
+ * Mantiene la representación del entorno descubierta por el agente paso a paso:
+ *
+ * 1. INDEPENDENCIA DE DIMENSIONES:
+ *    No fuerza un tamaño estático fijo (como 10x10): almacena las coordenadas de
+ *    forma dispersa (sparse) en un HashMap, permitiendo adaptarse de forma
+ *    transparente a mapas pequeños (10x10) o mapas masivos de la Fase 2 (50x50).
+ *
+ * 2. FUNCIONES DE ACTUALIZACIÓN DEL ESTADO (Diapositiva 33: función 'next'):
+ *    Recibe las percepciones sensoriales locales (bumpers y posición) e
+ *    incorpora las celdas contiguas como FREE (libres) u OBSTACLE (muros).
+ *
+ * 3. HIPÓTESIS DEL MUNDO LIBRE (Diapositivas 88-89):
+ *    Cualquier celda no percibida aún se clasifica como UNKNOWN (desconocida) y
+ *    es considerada provisionalmente transitable por el planificador hasta que
+ *    un bumper demuestre lo contrario.
  */
 public class MentalMap {
 
+    /** Mapa de coordenadas a tipo de celda conocido (FREE, OBSTACLE, UNKNOWN) */
     private final Map<GridPosition, CellType> cells = new HashMap<>();
+
+    /** Contador de visitas por casilla para el criterio de penalización */
     private final Map<GridPosition, Integer> visitCounts = new HashMap<>();
 
+    /** Límites espaciales observados para ajustar el área de búsqueda y renderizado */
     private int minX = Integer.MAX_VALUE;
     private int maxX = Integer.MIN_VALUE;
     private int minY = Integer.MAX_VALUE;
     private int maxY = Integer.MIN_VALUE;
 
+    // =========================================================================
+    // 1. MÉTODOS DE ACTUALIZACIÓN COGNITIVA (FUNCIÓN 'next' DEL TEMA 2)
+    // =========================================================================
+
     /**
-     * Registra la posición objetivo para que quede incluida dentro del área de visualización y búsqueda.
+     * Registra la posición objetivo (target) para incluirla en los límites de cálculo.
      */
     public void registerTarget(GridPosition target) {
         if (target != null) {
@@ -33,18 +56,20 @@ public class MentalMap {
     }
 
     /**
-     * Actualiza el mapa mental con la posición actual del agente y la lectura de sus 4 bumpers.
-     * - La posición actual se marca como FREE y se incrementa su contador de visitas.
-     * - Cada casilla adyacente con bumper == true se marca como OBSTACLE (muro o borde del mundo).
-     * - Cada casilla adyacente con bumper == false se marca como FREE.
+     * Actualiza el mapa mental con la percepción actual del agente:
+     * - La casilla actual se confirma como FREE y se incrementa su contador de visitas.
+     * - Las 4 casillas adyacentes se marcan como OBSTACLE (si bumper=true) o FREE (si bumper=false).
      */
     public void updateFromPerceptions(GridPosition current, GridBumpers bumpers) {
         if (current == null) {
             return;
         }
+
+        // Registrar la casilla donde está el agente como libre y visitada
         setCell(current, CellType.FREE);
         visitCounts.put(current, visitCounts.getOrDefault(current, 0) + 1);
 
+        // Actualizar las 4 celdas adyacentes según los sensores de colisión (bumpers)
         if (bumpers != null) {
             for (GridAction action : GridAction.values()) {
                 GridPosition neighbor = current.neighbor(action);
@@ -58,8 +83,7 @@ public class MentalMap {
     }
 
     /**
-     * Marca explícitamente una posición como obstáculo (por ejemplo, si una validación previa
-     * detecta un bloqueo inesperado).
+     * Marca manualmente una casilla como obstáculo en caso de detección preventiva.
      */
     public void markObstacle(GridPosition pos) {
         if (pos != null) {
@@ -79,15 +103,19 @@ public class MentalMap {
         if (pos.getY() > maxY) maxY = pos.getY();
     }
 
+    // =========================================================================
+    // 2. MÉTODOS DE CONSULTA Y EVALUACIÓN ESPACIAL
+    // =========================================================================
+
     /**
-     * Devuelve el estado conocido de una coordenada (UNKNOWN por defecto si aún no se ha percibido).
+     * Devuelve el estado conocido de una coordenada (UNKNOWN si aún no ha sido percibida).
      */
     public CellType getCellType(GridPosition pos) {
         return cells.getOrDefault(pos, CellType.UNKNOWN);
     }
 
     /**
-     * Bajo la estrategia Optimistic Online A*, una celda es transitable si es FREE o UNKNOWN.
+     * Determina si una casilla es transitable bajo la hipótesis optimista:
      * Solo las celdas confirmadas como OBSTACLE son intransitables.
      */
     public boolean isTransitable(GridPosition pos) {
@@ -95,7 +123,7 @@ public class MentalMap {
     }
 
     /**
-     * Devuelve cuántas veces ha pisado el agente una casilla concreta.
+     * Devuelve el número de veces que el agente ha transitado por una coordenada.
      */
     public int getVisitCount(GridPosition pos) {
         return visitCounts.getOrDefault(pos, 0);
@@ -121,16 +149,20 @@ public class MentalMap {
         return Collections.unmodifiableMap(cells);
     }
 
+    // =========================================================================
+    // 3. VISUALIZACIÓN DEL MAPA DESCUBIERTO (RENDERIZADO ASCII)
+    // =========================================================================
+
     /**
-     * Renderiza el mapa mental descubierto en formato ASCII para mostrar en consola tras cada paso.
+     * Dibuja el mapa mental en caracteres ASCII en la consola tras cada paso.
      *
      * Leyenda:
-     *   @ : Posición actual del agente (★ si ya está sobre la meta)
-     *   $ : Meta (target)
-     *   # : Obstáculo o límite del mundo (OBSTACLE)
-     *   + : Casilla libre ya visitada por el agente
-     *   . : Casilla libre observada por sensores pero aún no pisada
-     *   ? : Casilla desconocida (UNKNOWN)
+     *   @ : Posición actual de Wall-e (★ si ya ha alcanzado la meta)
+     *   $ : Meta (target / EVA)
+     *   # : Obstáculo o límite confirmado
+     *   + : Casilla libre ya pisada anteriormente
+     *   . : Casilla libre observada pero no pisada aún
+     *   ? : Terreno desconocido (niebla de guerra)
      */
     public String renderAscii(GridPosition current, GridPosition target) {
         if (current != null) expandBounds(current);
@@ -142,12 +174,15 @@ public class MentalMap {
         int endY = Math.max(9, getMaxY());
 
         StringBuilder sb = new StringBuilder();
+
+        // Encabezado de columnas
         sb.append("   ");
         for (int x = startX; x <= endX; x++) {
             sb.append(String.format("%2d ", x));
         }
         sb.append("\n");
 
+        // Filas del mapa
         for (int y = startY; y <= endY; y++) {
             sb.append(String.format("%2d ", y));
             for (int x = startX; x <= endX; x++) {

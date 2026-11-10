@@ -18,3 +18,8 @@ nbproject/private/
 .vscode/
 .idea/
 *.iml
+
+# Logs de ejecuciones y pruebas
+logs_fase2/
+*.log
+

@@ -229,21 +229,37 @@ public class DbaClient {
                 clean = clean.substring(1).trim();
             }
 
-            // 1. Si es un número entero: dar prioridad absoluta al orden del reto Grid (1, 2, 3...)
-            try {
-                int num = Integer.parseInt(clean);
-                if (num >= 1 && num <= gridChallenges.size()) {
-                    chosen = gridChallenges.get(num - 1);
-                } else {
-                    // Si el número está fuera del rango 1..N, buscar si coincide con un ID exacto de la base de datos
+            // 0. Si se especifica explícitamente id:<N> o id=<N>
+            if (clean.toLowerCase().startsWith("id:") || clean.toLowerCase().startsWith("id=")) {
+                try {
+                    long targetId = Long.parseLong(clean.substring(3).trim());
                     for (JSONObject ch : gridChallenges) {
-                        if (ch.getLong("id") == num) {
+                        if (ch.getLong("id") == targetId) {
                             chosen = ch;
                             break;
                         }
                     }
+                } catch (NumberFormatException ignored) {
                 }
-            } catch (NumberFormatException ignored) {
+            }
+
+            // 1. Si es un número entero: dar prioridad absoluta al orden del reto Grid (1, 2, 3...)
+            if (chosen == null) {
+                try {
+                    int num = Integer.parseInt(clean);
+                    if (num >= 1 && num <= gridChallenges.size()) {
+                        chosen = gridChallenges.get(num - 1);
+                    } else {
+                        // Si el número está fuera del rango 1..N, buscar si coincide con un ID exacto de la base de datos
+                        for (JSONObject ch : gridChallenges) {
+                            if (ch.getLong("id") == num) {
+                                chosen = ch;
+                                break;
+                            }
+                        }
+                    }
+                } catch (NumberFormatException ignored) {
+                }
             }
 
             // 2. Si no es un número o no se encontró, buscar por coincidencia parcial de texto
@@ -603,30 +619,44 @@ public class DbaClient {
     // ==========================================
 
     private String sendRequest(HttpRequest request) throws DbaException {
-        try {
-            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-            int status = response.statusCode();
-            String responseBody = response.body();
+        int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+                int status = response.statusCode();
+                String responseBody = response.body();
 
-            if (status < 200 || status >= 300) {
-                String errorCode = "HTTP_" + status;
-                String message = responseBody;
+                if (status < 200 || status >= 300) {
+                    String errorCode = "HTTP_" + status;
+                    String message = responseBody;
 
-                try {
-                    JSONObject errObj = new JSONObject(responseBody);
-                    if (errObj.has("code")) errorCode = errObj.getString("code");
-                    if (errObj.has("message")) message = errObj.getString("message");
-                } catch (Exception ignored) {
+                    try {
+                        JSONObject errObj = new JSONObject(responseBody);
+                        if (errObj.has("code")) errorCode = errObj.getString("code");
+                        if (errObj.has("message")) message = errObj.getString("message");
+                    } catch (Exception ignored) {
+                    }
+
+                    throw new DbaException(status, errorCode, message);
                 }
 
-                throw new DbaException(status, errorCode, message);
+                return responseBody;
+            } catch (IOException e) {
+                if (attempt == maxAttempts) {
+                    throw new DbaException("Error de conexión con DBA Lab tras " + maxAttempts + " intentos: " + e.getMessage(), e);
+                }
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new DbaException("Operación interrumpida durante el reintento de conexión", ie);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new DbaException("Operación interrumpida: " + e.getMessage(), e);
             }
-
-            return responseBody;
-        } catch (IOException | InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new DbaException("Error de conexión con DBA Lab: " + e.getMessage(), e);
         }
+        throw new DbaException("Error inesperado en sendRequest");
     }
 
     private JSONObject parseJsonObject(String jsonStr) throws DbaException {

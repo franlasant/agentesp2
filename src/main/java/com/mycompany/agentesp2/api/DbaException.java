@@ -13,6 +13,10 @@ public class DbaException extends Exception {
         this.errorCode = errorCode;
     }
 
+    public DbaException(String message) {
+        this(message, null);
+    }
+
     public DbaException(String message, Throwable cause) {
         super(message, cause);
         this.statusCode = -1;

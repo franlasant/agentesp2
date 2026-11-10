@@ -16,10 +16,22 @@ import java.util.Optional;
 import org.json.JSONObject;
 
 /**
- * Agente JADE de navegación 2D para el bloque Grid de la Práctica 2 (DBA Lab).
+ * ============================================================================
+ * AGENTE COGNITIVO DE NAVEGACIÓN 2D (GridAgent - JADE)
+ * ============================================================================
  *
- * Implementa el ciclo Percepción -> Actualización de Mapa Mental -> Planificación A* Optimista
- * -> Validación de Seguridad con Bumpers -> Acción -> Verificación de Estado Terminal.
+ * Implementa el ciclo formal de percepción y acción para agentes con estado interno
+ * presentado en el Tema 2 (Diapositivas 33 y 34):
+ *
+ *   1. FASE DE PERCEPCIÓN (see):
+ *      Recibe las lecturas sensoriales locales desde DBA Lab (posición, bumpers, energía).
+ *
+ *   2. FASE DE ACTUALIZACIÓN DEL ESTADO COGNITIVO (next):
+ *      Integra las observaciones en el MentalMap, descubriendo obstáculos y celdas libres.
+ *
+ *   3. FASE DE DELIBERACIÓN Y ACCIÓN (action):
+ *      El PathPlanner calcula en memoria la ruta óptima mediante A* optimista.
+ *      Se valida la acción contra colisiones con los bumpers y se envía al servidor.
  */
 public class GridAgent extends Agent {
 
@@ -36,6 +48,7 @@ public class GridAgent extends Agent {
         try {
             this.client = DbaClient.fromEnvOrConfig();
 
+            // 1. Identificar y resolver el reto seleccionado
             JSONObject challenge = resolveChallenge();
             if (challenge == null) {
                 System.err.println("[GridAgent] No se encontró ningún reto disponible de tipo GRID_2D.");
@@ -59,6 +72,7 @@ public class GridAgent extends Agent {
             System.out.printf("[GridAgent] Seleccionado Reto Grid #%d [ID=%d] (%s)%n",
                     gridIndex, challengeId, challengeName);
 
+            // 2. Iniciar la ejecución (run) en el servidor DBA Lab
             RunControl initialControl = client.startRunTyped(challengeId);
             if (initialControl.isTerminal()) {
                 System.err.println("[GridAgent] El run se inició ya en estado terminal: " + initialControl);
@@ -66,6 +80,7 @@ public class GridAgent extends Agent {
                 return;
             }
 
+            // 3. Obtener el estado inicial consolidado
             this.state = client.initGridState(initialControl.getRunId());
             if (state.getControl().isTerminal()) {
                 System.out.println("[GridAgent] El run terminó durante la lectura inicial: " + state.getControl());
@@ -73,6 +88,7 @@ public class GridAgent extends Agent {
                 return;
             }
 
+            // 4. Inicializar memoria espacial y planificador
             this.mentalMap = new MentalMap();
             this.mentalMap.registerTarget(state.getTargetPosition());
             this.planner = new PathPlanner();
@@ -83,6 +99,7 @@ public class GridAgent extends Agent {
                     state.getTargetPosition(),
                     state.getEnergy());
 
+            // 5. Iniciar el comportamiento de navegación en JADE
             addBehaviour(new NavegacionBehaviour());
 
         } catch (Exception e) {
@@ -133,8 +150,9 @@ public class GridAgent extends Agent {
     }
 
     /**
-     * Comportamiento de navegación paso a paso en JADE.
-     * Cada llamada a action() ejecuta una iteración del ciclo sin bloquear indefinidamente el hilo del agente.
+     * =========================================================================
+     * COMPORTAMIENTO JADE: Ciclo Percepción-Decisión-Acción Paso a Paso
+     * =========================================================================
      */
     private class NavegacionBehaviour extends Behaviour {
 
@@ -152,26 +170,32 @@ public class GridAgent extends Agent {
                 step++;
                 long runId = state.getControl().getRunId();
 
-                // 1. ACTUALIZAR MAPA MENTAL CON LA PERCEPCIÓN ACTUAL
+                // -------------------------------------------------------------
+                // FASE 2: ACTUALIZACIÓN COGNITIVA (función 'next' - Diapositiva 33)
+                // -------------------------------------------------------------
                 mentalMap.updateFromPerceptions(state.getCurrentPosition(), state.getBumpers());
 
-                // 2. MOSTRAR ESTADO, ENERGÍA Y MAPA ASCII
+                // Mostrar traza y mapa ASCII en consola
                 System.out.println("\n------------------------------------------------------------");
                 System.out.printf("[Paso %d | %s] %s%n", step, challengeName, state);
                 System.out.println(mentalMap.renderAscii(state.getCurrentPosition(), state.getTargetPosition()));
 
+                // Comprobar si ya alcanzamos la meta o el run ha concluido
                 if (state.isAtTarget() || state.getControl().isTerminal()) {
                     finishNavigation();
                     return;
                 }
 
+                // Guardián de batería: detenerse limpiamente si se agota la energía
                 if (!state.getEnergy().hasEnergy()) {
                     System.err.println("[GridAgent] Energía agotada antes de alcanzar la meta.");
                     finishNavigation();
                     return;
                 }
 
-                // 3. CALCULAR SIGUIENTE PASO CON A* OPTIMISTA (con reintento local si el bumper contradice)
+                // -------------------------------------------------------------
+                // FASE 3: DELIBERACIÓN Y ACCIÓN (función 'action' - Diapositiva 33)
+                // -------------------------------------------------------------
                 GridAction nextAction = selectValidatedSafeAction();
                 if (nextAction == null) {
                     System.err.println("[GridAgent] No existe ruta transitable hacia la meta "
@@ -180,18 +204,18 @@ public class GridAgent extends Agent {
                     return;
                 }
 
-                // 4. ENVIAR ACCIÓN AL SERVIDOR
+                // Ejecución física del movimiento en DBA Lab
                 GridPosition expectedNextPos = state.getCurrentPosition().neighbor(nextAction);
                 RunControl actionControl = client.sendGridAction(runId, nextAction);
                 state.updateControl(actionControl);
 
-                System.out.printf("[Paso %d] Acción enviada: %s -> %s | Estado Acción: %s | Run: %s (Razón: %s)%n",
+                System.out.printf("[Paso %d] Acción enviada: %s -> %s | Estado: %s | Run: %s (Razón: %s)%n",
                         step, nextAction, expectedNextPos,
                         actionControl.getActionStatus(),
                         actionControl.getRunStatus(),
                         actionControl.getReasonCode());
 
-                // 5. COMPROBAR SI EL RUN HA TERMINADO TRAS LA ACCIÓN
+                // Comprobar estado terminal tras el movimiento
                 if (state.getControl().isTerminal()) {
                     if (state.getControl().getRunStatus() == RunStatus.SUCCEEDED) {
                         mentalMap.updateFromPerceptions(expectedNextPos, null);
@@ -202,7 +226,9 @@ public class GridAgent extends Agent {
                     return;
                 }
 
-                // 6. LEER NUEVAS PERCEPCIONES (POSICIÓN, BUMPERS Y ENERGÍA) PARA EL SIGUIENTE TURNO
+                // -------------------------------------------------------------
+                // FASE 1 DEL SIGUIENTE TURNO: PERCEPCIÓN (función 'see' - Diapositiva 33)
+                // -------------------------------------------------------------
                 client.refreshGridState(state);
                 if (state.getControl().isTerminal()) {
                     finishNavigation();
@@ -215,9 +241,9 @@ public class GridAgent extends Agent {
         }
 
         /**
-         * Planifica con A* y valida estrictamente con bumpers.isSafe() antes de devolver la acción.
-         * Si la acción propuesta estuviera bloqueada por un bumper, marca la celda como OBSTACLE
-         * en el MentalMap y replanifica en memoria sin enviar nada al servidor.
+         * Planifica con A* y valida estrictamente con bumpers.isSafe() antes de enviar la acción.
+         * Si la acción propuesta estuviera bloqueada por un bumper imprevisto, marca la celda
+         * como OBSTACLE en el MentalMap y replanifica en memoria sin enviar nada al servidor.
          */
         private GridAction selectValidatedSafeAction() {
             for (int attempt = 0; attempt < 4; attempt++) {
@@ -235,7 +261,7 @@ public class GridAgent extends Agent {
                     return candidate;
                 }
 
-                // Si el bumper indica bloqueo, marcamos el obstáculo y replanificamos sin enviar
+                // Si el bumper físico contradice la hipótesis optimista, corregir mapa mental
                 GridPosition blockedCell = state.getCurrentPosition().neighbor(candidate);
                 System.out.println("[GridAgent] Prevención de choque: dirección " + candidate
                         + " bloqueada por bumper. Marcando " + blockedCell + " como OBSTACLE y replanificando...");
@@ -263,7 +289,7 @@ public class GridAgent extends Agent {
 
         @Override
         public boolean done() {
-            return finished || state == null || state.getControl().isTerminal();
+            return finished || (state != null && state.getControl().isTerminal());
         }
     }
 }
