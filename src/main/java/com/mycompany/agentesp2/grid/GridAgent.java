@@ -161,81 +161,119 @@ public class GridAgent extends Agent {
 
         @Override
         public void action() {
-            if (state == null || state.getControl().isTerminal()) {
+            if (isFinishedOrTerminal()) {
                 finishNavigation();
                 return;
             }
 
             try {
                 step++;
-                long runId = state.getControl().getRunId();
 
                 // -------------------------------------------------------------
-                // FASE 2: ACTUALIZACIÓN COGNITIVA (función 'next' - Diapositiva 33)
+                // 1. FASE NEXT: Actualización cognitiva y renderizado del mapa
                 // -------------------------------------------------------------
-                mentalMap.updateFromPerceptions(state.getCurrentPosition(), state.getBumpers());
+                updateCognitiveState();
 
-                // Mostrar traza y mapa ASCII en consola
-                System.out.println("\n------------------------------------------------------------");
-                System.out.printf("[Paso %d | %s] %s%n", step, challengeName, state);
-                System.out.println(mentalMap.renderAscii(state.getCurrentPosition(), state.getTargetPosition()));
-
-                // Comprobar si ya alcanzamos la meta o el run ha concluido
-                if (state.isAtTarget() || state.getControl().isTerminal()) {
-                    finishNavigation();
-                    return;
-                }
-
-                // Guardián de batería: detenerse limpiamente si se agota la energía
-                if (!state.getEnergy().hasEnergy()) {
-                    System.err.println("[GridAgent] Energía agotada antes de alcanzar la meta.");
-                    finishNavigation();
+                // 2. Comprobar si ya alcanzamos la meta o se agotó la batería
+                if (checkTerminationConditions()) {
                     return;
                 }
 
                 // -------------------------------------------------------------
-                // FASE 3: DELIBERACIÓN Y ACCIÓN (función 'action' - Diapositiva 33)
+                // 3. FASE ACTION: Deliberación A* y ejecución del movimiento
                 // -------------------------------------------------------------
-                GridAction nextAction = selectValidatedSafeAction();
-                if (nextAction == null) {
-                    System.err.println("[GridAgent] No existe ruta transitable hacia la meta "
-                            + state.getTargetPosition() + ". Parada controlada para evitar colisión.");
-                    finishNavigation();
-                    return;
-                }
-
-                // Ejecución física del movimiento en DBA Lab
-                GridPosition expectedNextPos = state.getCurrentPosition().neighbor(nextAction);
-                RunControl actionControl = client.sendGridAction(runId, nextAction);
-                state.updateControl(actionControl);
-
-                System.out.printf("[Paso %d] Acción enviada: %s -> %s | Estado: %s | Run: %s (Razón: %s)%n",
-                        step, nextAction, expectedNextPos,
-                        actionControl.getActionStatus(),
-                        actionControl.getRunStatus(),
-                        actionControl.getReasonCode());
-
-                // Comprobar estado terminal tras el movimiento
-                if (state.getControl().isTerminal()) {
-                    if (state.getControl().getRunStatus() == RunStatus.SUCCEEDED) {
-                        mentalMap.updateFromPerceptions(expectedNextPos, null);
-                        System.out.println("\nMapa final al alcanzar la meta:");
-                        System.out.println(mentalMap.renderAscii(expectedNextPos, state.getTargetPosition()));
-                    }
-                    finishNavigation();
+                if (!deliberateAndExecuteMove()) {
                     return;
                 }
 
                 // -------------------------------------------------------------
-                // FASE 1 DEL SIGUIENTE TURNO: PERCEPCIÓN (función 'see' - Diapositiva 33)
+                // 4. FASE SEE: Percepción del entorno para el siguiente turno
                 // -------------------------------------------------------------
-                client.refreshGridState(state);
-                if (state.getControl().isTerminal()) {
-                    finishNavigation();
-                }
+                perceiveNextState();
 
             } catch (Exception e) {
                 System.err.println("[GridAgent] Error durante el ciclo de navegación: " + e.getMessage());
+                finishNavigation();
+            }
+        }
+
+        private boolean isFinishedOrTerminal() {
+            return finished || state == null || state.getControl() == null || state.getControl().isTerminal();
+        }
+
+        /**
+         * FASE NEXT: Incorpora las lecturas de los bumpers en el MentalMap
+         * y muestra la telemetría y el mapa ASCII en consola.
+         */
+        private void updateCognitiveState() {
+            mentalMap.updateFromPerceptions(state.getCurrentPosition(), state.getBumpers());
+            System.out.println("\n------------------------------------------------------------");
+            System.out.printf("[Paso %d | %s] %s%n", step, challengeName, state);
+            System.out.println(mentalMap.renderAscii(state.getCurrentPosition(), state.getTargetPosition()));
+        }
+
+        /**
+         * Evalúa las condiciones de parada antes de deliberar:
+         * - Meta alcanzada o run concluido.
+         * - Batería agotada (guardián de energía).
+         */
+        private boolean checkTerminationConditions() {
+            if (state.isAtTarget() || state.getControl().isTerminal()) {
+                finishNavigation();
+                return true;
+            }
+            if (!state.getEnergy().hasEnergy()) {
+                System.err.println("[GridAgent] Energía agotada antes de alcanzar la meta.");
+                finishNavigation();
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * FASE ACTION: Selecciona una acción validada por A*, la envía al servidor DBA Lab
+         * y actualiza el estado de control tras el movimiento.
+         */
+        private boolean deliberateAndExecuteMove() throws DbaException {
+            long runId = state.getControl().getRunId();
+            GridAction nextAction = selectValidatedSafeAction();
+
+            if (nextAction == null) {
+                System.err.println("[GridAgent] No existe ruta transitable hacia la meta "
+                        + state.getTargetPosition() + ". Parada controlada para evitar colisión.");
+                finishNavigation();
+                return false;
+            }
+
+            GridPosition expectedNextPos = state.getCurrentPosition().neighbor(nextAction);
+            RunControl actionControl = client.sendGridAction(runId, nextAction);
+            state.updateControl(actionControl);
+
+            System.out.printf("[Paso %d] Acción enviada: %s -> %s | Estado: %s | Run: %s (Razón: %s)%n",
+                    step, nextAction, expectedNextPos,
+                    actionControl.getActionStatus(),
+                    actionControl.getRunStatus(),
+                    actionControl.getReasonCode());
+
+            if (state.getControl().isTerminal()) {
+                if (state.getControl().getRunStatus() == RunStatus.SUCCEEDED) {
+                    mentalMap.updateFromPerceptions(expectedNextPos, null);
+                    System.out.println("\nMapa final al alcanzar la meta:");
+                    System.out.println(mentalMap.renderAscii(expectedNextPos, state.getTargetPosition()));
+                }
+                finishNavigation();
+                return false;
+            }
+            return true;
+        }
+
+        /**
+         * FASE SEE: Consulta los sensores dinámicos del servidor tras el paso físico
+         * para disponer de la percepción inicial del siguiente turno.
+         */
+        private void perceiveNextState() throws DbaException {
+            client.refreshGridState(state);
+            if (state.getControl().isTerminal()) {
                 finishNavigation();
             }
         }
