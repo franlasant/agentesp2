@@ -431,7 +431,7 @@ public class DbaClient {
                 .GET()
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, true);
         try {
             String trimmed = body.trim();
             if (trimmed.startsWith("{")) {
@@ -465,7 +465,7 @@ public class DbaClient {
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, false);
         JSONObject result = parseJsonObject(body);
         RunControl ctrl = RunControl.fromJson(result);
         trackControlState(ctrl);
@@ -483,7 +483,7 @@ public class DbaClient {
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, true);
         return parseJsonObject(body);
     }
 
@@ -502,7 +502,7 @@ public class DbaClient {
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, false);
         return parseJsonObject(body);
     }
 
@@ -517,7 +517,7 @@ public class DbaClient {
                 .GET()
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, true);
         return parseJsonObject(body);
     }
 
@@ -532,7 +532,7 @@ public class DbaClient {
                 .GET()
                 .build();
 
-        String body = sendRequest(request);
+        String body = sendRequest(request, true);
         return parseJsonObject(body);
     }
 
@@ -548,7 +548,7 @@ public class DbaClient {
                 .build();
 
         try {
-            String body = sendRequest(request);
+            String body = sendRequest(request, false);
             return parseJsonObject(body);
         } finally {
             if (this.currentActiveRunId == runId) {
@@ -618,8 +618,14 @@ public class DbaClient {
     // MÉTODOS AUXILIARES HTTP
     // ==========================================
 
-    private String sendRequest(HttpRequest request) throws DbaException {
-        int maxAttempts = 3;
+    /**
+     * Envía una petición HTTP con control estricto de idempotencia:
+     * - Si retryable = true (GET o lecturas pasivas): reintenta hasta 3 veces ante IOException.
+     * - Si retryable = false (POST /actions, POST /runs): no reintenta; lanza DbaException (código -1)
+     *   para que el llamador active la auditoría de estado sin enviar movimientos duplicados.
+     */
+    private String sendRequest(HttpRequest request, boolean retryable) throws DbaException {
+        int maxAttempts = retryable ? 3 : 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
@@ -642,8 +648,11 @@ public class DbaClient {
 
                 return responseBody;
             } catch (IOException e) {
-                if (attempt == maxAttempts) {
-                    throw new DbaException("Error de conexión con DBA Lab tras " + maxAttempts + " intentos: " + e.getMessage(), e);
+                if (attempt >= maxAttempts) {
+                    String msg = retryable
+                            ? "Error de conexión con DBA Lab tras " + maxAttempts + " intentos: " + e.getMessage()
+                            : "Error de conexión con DBA Lab (operación no reintentable): " + e.getMessage();
+                    throw new DbaException(msg, e);
                 }
                 try {
                     Thread.sleep(500);
@@ -657,6 +666,10 @@ public class DbaClient {
             }
         }
         throw new DbaException("Error inesperado en sendRequest");
+    }
+
+    private String sendRequest(HttpRequest request) throws DbaException {
+        return sendRequest(request, false);
     }
 
     private JSONObject parseJsonObject(String jsonStr) throws DbaException {
