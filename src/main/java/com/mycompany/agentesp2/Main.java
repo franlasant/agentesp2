@@ -94,13 +94,16 @@ public class Main {
         }
 
         String agentSpec;
+        long timestamp = System.currentTimeMillis() % 100000;
         if ("termostato".equalsIgnoreCase(mode) || "thermostat".equalsIgnoreCase(mode) || "1".equals(mode)) {
             System.out.println("Preparando TermostatoAgent...");
-            agentSpec = "termostato:com.mycompany.agentesp2.termostato.TermostatoAgent"
+            String agentName = "termostato_" + timestamp;
+            agentSpec = agentName + ":com.mycompany.agentesp2.termostato.TermostatoAgent"
                     + (challengeArg != null && !challengeArg.isEmpty() ? "(" + challengeArg + ")" : "");
         } else {
             System.out.println("Preparando GridAgent...");
-            agentSpec = "grid:com.mycompany.agentesp2.grid.GridAgent"
+            String agentName = "grid_" + timestamp;
+            agentSpec = agentName + ":com.mycompany.agentesp2.grid.GridAgent"
                     + (challengeArg != null && !challengeArg.isEmpty() ? "(" + challengeArg + ")" : "");
         }
 
