@@ -2,8 +2,8 @@ package com.mycompany.agentesp2.grid;
 
 import com.mycompany.agentesp2.api.DbaClient;
 import com.mycompany.agentesp2.api.DbaException;
+import com.mycompany.agentesp2.grid.navigation.Bug2Navigator;
 import com.mycompany.agentesp2.grid.navigation.MentalMap;
-import com.mycompany.agentesp2.grid.navigation.PathPlanner;
 import com.mycompany.agentesp2.model.RunControl;
 import com.mycompany.agentesp2.model.RunStatus;
 import com.mycompany.agentesp2.model.grid.GridAction;
@@ -30,15 +30,15 @@ import org.json.JSONObject;
  *      Integra las observaciones en el MentalMap, descubriendo obstáculos y celdas libres.
  *
  *   3. FASE DE DELIBERACIÓN Y ACCIÓN (action):
- *      El PathPlanner calcula en memoria la ruta óptima mediante A* optimista.
- *      Se valida la acción contra colisiones con los bumpers y se envía al servidor.
+ *      El Bug2Navigator decide el siguiente paso mediante el algoritmo Bug2 (Tema 2).
+ *      Alterna entre MOTION_TO_GOAL y WALL_FOLLOWING, validando con bumpers.
  */
 public class GridAgent extends Agent {
 
     private DbaClient client;
     private GridState state;
     private MentalMap mentalMap;
-    private PathPlanner planner;
+    private Bug2Navigator navigator;
     private String challengeName = "GRID_2D";
 
     @Override
@@ -88,10 +88,10 @@ public class GridAgent extends Agent {
                 return;
             }
 
-            // 4. Inicializar memoria espacial y planificador
+            // 4. Inicializar memoria espacial y navegador Bug2 (Tema 2)
             this.mentalMap = new MentalMap();
             this.mentalMap.registerTarget(state.getTargetPosition());
-            this.planner = new PathPlanner();
+            this.navigator = new Bug2Navigator(state.getCurrentPosition(), state.getTargetPosition());
 
             System.out.printf("[GridAgent] Run %d ACTIVO | Inicio: %s | Meta: %s | Energía inicial: %s%n",
                     state.getControl().getRunId(),
@@ -279,32 +279,24 @@ public class GridAgent extends Agent {
         }
 
         /**
-         * Planifica con A* y valida estrictamente con bumpers.isSafe() antes de enviar la acción.
-         * Si la acción propuesta estuviera bloqueada por un bumper imprevisto, marca la celda
-         * como OBSTACLE en el MentalMap y replanifica en memoria sin enviar nada al servidor.
+         * Decide la acción mediante Bug2 y valida con bumpers antes de enviar la acción.
          */
         private GridAction selectValidatedSafeAction() {
-            for (int attempt = 0; attempt < 4; attempt++) {
-                Optional<GridAction> plannedOpt = planner.findNextAction(
-                        state.getCurrentPosition(),
-                        state.getTargetPosition(),
-                        mentalMap
-                );
-                if (plannedOpt.isEmpty()) {
-                    return null;
-                }
-
-                GridAction candidate = plannedOpt.get();
-                if (state.getBumpers().isSafe(candidate)) {
-                    return candidate;
-                }
-
-                // Si el bumper físico contradice la hipótesis optimista, corregir mapa mental
-                GridPosition blockedCell = state.getCurrentPosition().neighbor(candidate);
-                System.out.println("[GridAgent] Prevención de choque: dirección " + candidate
-                        + " bloqueada por bumper. Marcando " + blockedCell + " como OBSTACLE y replanificando...");
-                mentalMap.markObstacle(blockedCell);
+            Optional<GridAction> plannedOpt = navigator.nextAction(
+                    state.getCurrentPosition(),
+                    state.getBumpers()
+            );
+            if (plannedOpt.isEmpty()) {
+                return null;
             }
+
+            GridAction candidate = plannedOpt.get();
+            if (state.getBumpers().isSafe(candidate)) {
+                return candidate;
+            }
+
+            System.out.println("[GridAgent] Prevención de choque: acción " + candidate
+                    + " contradicha por bumpers.");
             return null;
         }
 
