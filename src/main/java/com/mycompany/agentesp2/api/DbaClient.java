@@ -35,13 +35,21 @@ public class DbaClient {
 
     private static final Path ACTIVE_RUN_FILE = Paths.get(".active_run_id");
 
+    /** Delay por defecto entre peticiones a DBA Lab (al menos 0.5 segundos / 500 ms) */
+    public static final long DEFAULT_REQUEST_DELAY_MS = 500L;
+
     private final HttpClient http;
     private final String baseUrl;
     private final String token;
+    private final long requestDelayMs;
     private volatile long currentActiveRunId = -1L;
     private final AtomicBoolean shutdownHookRegistered = new AtomicBoolean(false);
 
     public DbaClient(String baseUrl, String token) {
+        this(baseUrl, token, DEFAULT_REQUEST_DELAY_MS);
+    }
+
+    public DbaClient(String baseUrl, String token, long requestDelayMs) {
         if (baseUrl == null || baseUrl.isBlank()) {
             throw new IllegalArgumentException("La URL de DBA Lab no puede ser nula ni vacía.");
         }
@@ -55,12 +63,15 @@ public class DbaClient {
         }
         this.baseUrl = url;
         this.token = token.trim();
+        this.requestDelayMs = Math.max(0L, requestDelayMs);
 
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
 
         registerJvmShutdownHook();
+        System.out.println("[DbaClient] Cliente inicializado (" + this.baseUrl + "). Delay entre peticiones: "
+                + this.requestDelayMs + " ms (protección térmica del servidor).");
     }
 
     /**
@@ -94,8 +105,12 @@ public class DbaClient {
     public static DbaClient fromEnvOrConfig() {
         String url = System.getenv("DBA_LAB_URL");
         String token = System.getenv("DBA_TOKEN");
+        String delayStr = System.getenv("DBA_REQUEST_DELAY_MS");
+        if (delayStr == null) {
+            delayStr = System.getenv("DBA_DELAY_MS");
+        }
 
-        if (url == null || token == null) {
+        if (url == null || token == null || delayStr == null) {
             Path configPath = Paths.get("config.properties");
             if (Files.exists(configPath)) {
                 Properties props = new Properties();
@@ -103,6 +118,9 @@ public class DbaClient {
                     props.load(in);
                     if (url == null) url = props.getProperty("DBA_LAB_URL");
                     if (token == null) token = props.getProperty("DBA_TOKEN");
+                    if (delayStr == null) {
+                        delayStr = props.getProperty("DBA_REQUEST_DELAY_MS", props.getProperty("DBA_DELAY_MS"));
+                    }
                 } catch (IOException ignored) {
                 }
             }
@@ -115,11 +133,23 @@ public class DbaClient {
             );
         }
 
-        return new DbaClient(url, token);
+        long delayMs = DEFAULT_REQUEST_DELAY_MS;
+        if (delayStr != null && !delayStr.isBlank()) {
+            try {
+                delayMs = Long.parseLong(delayStr.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        return new DbaClient(url, token, delayMs);
     }
 
     public String getBaseUrl() {
         return baseUrl;
+    }
+
+    public long getRequestDelayMs() {
+        return requestDelayMs;
     }
 
     // ==========================================
@@ -615,16 +645,32 @@ public class DbaClient {
     }
 
     // ==========================================
-    // MÉTODOS AUXILIARES HTTP
+    // MÉTODOS AUXILIARES HTTP Y CONTROL DE TASA
     // ==========================================
 
     /**
-     * Envía una petición HTTP con control estricto de idempotencia:
+     * Aplica la pausa obligatoria de seguridad antes de cada petición saliente
+     * para no sobrecalentar el procesador del servidor DBA Lab.
+     */
+    private void applyRequestDelay() {
+        if (this.requestDelayMs > 0) {
+            try {
+                Thread.sleep(this.requestDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * Envía una petición HTTP con control estricto de idempotencia y retardo térmico:
+     * - Aplica un retardo de al menos 0.5s (requestDelayMs) antes de cada envío al servidor.
      * - Si retryable = true (GET o lecturas pasivas): reintenta hasta 3 veces ante IOException.
      * - Si retryable = false (POST /actions, POST /runs): no reintenta; lanza DbaException (código -1)
      *   para que el llamador active la auditoría de estado sin enviar movimientos duplicados.
      */
     private String sendRequest(HttpRequest request, boolean retryable) throws DbaException {
+        applyRequestDelay();
         int maxAttempts = retryable ? 3 : 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {

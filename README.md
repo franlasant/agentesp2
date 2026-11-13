@@ -29,12 +29,13 @@ Implementación de agentes inteligentes en **JADE** que interactúan con el labo
    ```bash
    cp config.properties.template config.properties
    ```
-   Edita `config.properties` introduciendo la URL del servidor y tu `DBA_TOKEN`:
+   Edita `config.properties` introduciendo la URL del servidor, tu `DBA_TOKEN` y opcionalmente el retardo:
    ```properties
    DBA_LAB_URL=http://orca.ugr.es:8080
    DBA_TOKEN=<tu-token-personal>
+   DBA_REQUEST_DELAY_MS=500
    ```
-   *(Nota: `config.properties` está ignorado en `.gitignore` por seguridad para no exponer credenciales).*
+   *(Nota: `DBA_REQUEST_DELAY_MS` aplica un retardo obligatorio de al menos 500 ms (0.5 s) entre peticiones para proteger el disipador térmico y la CPU del servidor DBA Lab).*
 
 ---
 
