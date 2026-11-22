@@ -123,6 +123,37 @@ public class MentalMap {
     }
 
     /**
+     * Determina si una casilla es conocida y está confirmada como libre (FREE).
+     * Base del algoritmo A* actuando exclusivamente sobre el mapa conocido.
+     */
+    public boolean isKnownFree(GridPosition pos) {
+        return getCellType(pos) == CellType.FREE;
+    }
+
+    /**
+     * Determina si una casilla es una FRONTERA del mapa conocido (Tema 2, Slide 88-89):
+     * Es una casilla confirmada como FREE por los sensores, que el agente aún no ha
+     * pisado (visitCount == 0) y que colinda con al menos una celda desconocida (UNKNOWN).
+     */
+    public boolean isFrontier(GridPosition pos) {
+        return isKnownFree(pos) && getVisitCount(pos) == 0 && countUnknownNeighbors(pos) > 0;
+    }
+
+    /**
+     * Cuenta cuántas celdas desconocidas (UNKNOWN) colindan con la posición dada
+     * (Criterio de Información Esperada en Fronteras, Tema 2, Slide 89).
+     */
+    public int countUnknownNeighbors(GridPosition pos) {
+        int count = 0;
+        for (GridAction action : GridAction.values()) {
+            if (getCellType(pos.neighbor(action)) == CellType.UNKNOWN) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
      * Devuelve el número de veces que el agente ha transitado por una coordenada.
      */
     public int getVisitCount(GridPosition pos) {

@@ -38,7 +38,8 @@ public class PathPlannerTest {
         test.testCBarrier10x10();
         test.testArchBarrier10x10();
         test.testUnreachableTargetControlledFailure();
-        System.out.println("✅ [PathPlannerTest] Todos los escenarios de navegación 10x10 superados sin colisiones.");
+        test.testMassiveMap100x100();
+        System.out.println("✅ [PathPlannerTest] Todos los escenarios de navegación (10x10 y 100x100) superados sin colisiones.");
     }
 
     public void testOpenField10x10() {
@@ -191,6 +192,27 @@ public class PathPlannerTest {
         assertTrue(res.controlledStopWithoutPath, "Debe detenerse de forma controlada al detectar que no existe ruta");
     }
 
+    public void testMassiveMap100x100() {
+        int size = 100;
+        String[] map = new String[size];
+        for (int y = 0; y < size; y++) {
+            StringBuilder row = new StringBuilder(size);
+            for (int x = 0; x < size; x++) {
+                boolean isWall = (x == 30 && y >= 5 && y <= 85)
+                        || (y == 60 && x >= 15 && x <= 75)
+                        || (x == 70 && y >= 20 && y <= 90);
+                row.append(isWall ? '#' : '.');
+            }
+            map[y] = row.toString();
+        }
+        long t0 = System.nanoTime();
+        SimulationResult res = runOnlineSimulation("Mapa Masivo 100x100 con barreras", map,
+                new GridPosition(2, 50), new GridPosition(95, 50), 1000);
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+        assertTrue(res.reachedTarget, "Debe alcanzar la meta en el mapa masivo 100x100");
+        assertTrue(elapsedMs < 500, "Debe resolverse en pocos milisegundos en mapas masivos (tardó " + elapsedMs + " ms)");
+    }
+
     // =========================================================================
     // MOTOR DE SIMULACIÓN LOCAL DE PERCEPCIÓN PARCIAL (SIN RED)
     // =========================================================================
@@ -267,8 +289,9 @@ public class PathPlannerTest {
             mentalMap.updateFromPerceptions(current, finalBumpers);
         }
 
-        System.out.printf("  [%s] Éxito=%s | Pasos=%d | Energía restante=%d/%d%n",
-                scenarioName, reached, steps, energy, initialEnergy);
+        System.out.printf("  [%s] Éxito=%s | Pasos=%d | Energía restante=%d/%d | Llamadas A*=%d (Nodos expandidos=%d)%n",
+                scenarioName, reached, steps, energy, initialEnergy,
+                planner.getReplanCount(), planner.getTotalExpandedNodes());
         return new SimulationResult(reached, false, steps, energy);
     }
 

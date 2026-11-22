@@ -22,6 +22,14 @@ case "$ACTION" in
         echo "💡 Déjalo abierto en esta terminal y lanza los agentes desde otra terminal con: ./run.sh grid 1"
         $MVN compile exec:java -Dexec.args="server"
         ;;
+    gui|visualizer|sim)
+        echo "🎨 Abriendo Interfaz Gráfica Visual del Agente Grid 2D..."
+        if [ -n "$CHALLENGE_ARG" ]; then
+            $MVN compile exec:java -Dexec.args="gui $CHALLENGE_ARG"
+        else
+            $MVN compile exec:java -Dexec.args="gui"
+        fi
+        ;;
     grid)
         echo "🧭 Ejecutando GridAgent (Navegación 2D)..."
         if [ -n "$CHALLENGE_ARG" ]; then
@@ -59,7 +67,7 @@ case "$ACTION" in
         $MVN clean
         ;;
     *)
-        echo "Uso: ./run.sh [server | grid [1..7] | termostato [reto] | test-unit | test | compile | clean]"
+        echo "Uso: ./run.sh [gui [1..10] | server | grid [1..7] | termostato [reto] | test-unit | test | compile | clean]"
         exit 1
         ;;
 esac

@@ -1,6 +1,7 @@
 package com.mycompany.agentesp2;
 
 import com.mycompany.agentesp2.api.DbaClient;
+import com.mycompany.agentesp2.grid.gui.GridVisualizerGui;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -35,6 +36,19 @@ public class Main {
         // Modo 1: Levantar únicamente el servidor/plataforma JADE (Main-Container persistente)
         if ("server".equalsIgnoreCase(mode) || "platform".equalsIgnoreCase(mode)) {
             startJadeMainContainerServer();
+            return;
+        }
+
+        // Modo Visualizador Gráfico Interactivo Offline
+        if ("gui".equalsIgnoreCase(mode) || "visualizer".equalsIgnoreCase(mode) || "sim".equalsIgnoreCase(mode)) {
+            int mapIdx = 0;
+            if (args != null && args.length > 1) {
+                try {
+                    mapIdx = Math.max(0, Integer.parseInt(args[1].replace("#", "").trim()) - 1);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            GridVisualizerGui.launchInteractive(mapIdx);
             return;
         }
 

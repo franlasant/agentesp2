@@ -2,6 +2,7 @@ package com.mycompany.agentesp2.grid;
 
 import com.mycompany.agentesp2.api.DbaClient;
 import com.mycompany.agentesp2.api.DbaException;
+import com.mycompany.agentesp2.grid.gui.GridVisualizerGui;
 import com.mycompany.agentesp2.grid.navigation.MentalMap;
 import com.mycompany.agentesp2.grid.navigation.PathPlanner;
 import com.mycompany.agentesp2.model.RunControl;
@@ -40,6 +41,7 @@ public class GridAgent extends Agent {
     private MentalMap mentalMap;
     private PathPlanner planner;
     private String challengeName = "GRID_2D";
+    private GridVisualizerGui visualizerGui;
 
     @Override
     protected void setup() {
@@ -88,10 +90,13 @@ public class GridAgent extends Agent {
                 return;
             }
 
-            // 4. Inicializar memoria espacial y planificador
+            // 4. Inicializar memoria espacial, planificador y monitor visual
             this.mentalMap = new MentalMap();
             this.mentalMap.registerTarget(state.getTargetPosition());
             this.planner = new PathPlanner();
+            this.visualizerGui = GridVisualizerGui.createLiveMonitor(
+                    this.challengeName, state.getCurrentPosition(), state.getTargetPosition()
+            );
 
             System.out.printf("[GridAgent] Run %d ACTIVO | Inicio: %s | Meta: %s | Energía inicial: %s%n",
                     state.getControl().getRunId(),
@@ -210,6 +215,18 @@ public class GridAgent extends Agent {
             System.out.println("\n------------------------------------------------------------");
             System.out.printf("[Paso %d | %s] %s%n", step, challengeName, state);
             System.out.println(mentalMap.renderAscii(state.getCurrentPosition(), state.getTargetPosition()));
+            if (visualizerGui != null) {
+                visualizerGui.updateLiveState(
+                        step,
+                        state.getCurrentPosition(),
+                        state.getTargetPosition(),
+                        state.getBumpers(),
+                        state.getEnergy(),
+                        mentalMap,
+                        planner,
+                        state.getControl().getRunStatus().name()
+                );
+            }
         }
 
         /**
@@ -260,6 +277,18 @@ public class GridAgent extends Agent {
                     mentalMap.updateFromPerceptions(expectedNextPos, null);
                     System.out.println("\nMapa final al alcanzar la meta:");
                     System.out.println(mentalMap.renderAscii(expectedNextPos, state.getTargetPosition()));
+                    if (visualizerGui != null) {
+                        visualizerGui.updateLiveState(
+                                step,
+                                expectedNextPos,
+                                state.getTargetPosition(),
+                                state.getBumpers(),
+                                state.getEnergy(),
+                                mentalMap,
+                                planner,
+                                "¡META ALCANZADA!"
+                        );
+                    }
                 }
                 finishNavigation();
                 return false;
@@ -304,6 +333,7 @@ public class GridAgent extends Agent {
                 System.out.println("[GridAgent] Prevención de choque: dirección " + candidate
                         + " bloqueada por bumper. Marcando " + blockedCell + " como OBSTACLE y replanificando...");
                 mentalMap.markObstacle(blockedCell);
+                planner.clearPlan();
             }
             return null;
         }

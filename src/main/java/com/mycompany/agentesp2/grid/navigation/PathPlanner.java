@@ -2,6 +2,7 @@ package com.mycompany.agentesp2.grid.navigation;
 
 import com.mycompany.agentesp2.model.grid.GridAction;
 import com.mycompany.agentesp2.model.grid.GridPosition;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -10,57 +11,71 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
+import java.util.Queue;
 import java.util.Set;
 
 /**
  * ============================================================================
- * CEREBRO ALGORÍTMICO: Planificador de Trayectorias (Optimistic Online A*)
+ * CEREBRO ALGORÍTMICO: Planificador A* Basado en lo Conocido (Known-Space A*)
  * ============================================================================
  *
- * Implementa el algoritmo de búsqueda heurística en línea basado en los
- * principios del Tema 2 de la asignatura (Diseño Basado en Agentes - UGR):
+ * Adaptación del algoritmo A* para mapas masivos con percepción parcial,
+ * siguiendo la recomendación del profesor y los principios del Tema 2
+ * (Diapositivas 84-91: Búsqueda en Memoria y Exploración por Fronteras):
  *
- * 1. CÁLCULO MENTAL EN GRAFO (Diapositivas 84 y 91):
- *    Planifica la ruta óptima en memoria interna antes de realizar movimientos
- *    físicos, evitando el coste del retroceso físico (backtracking) de DFS.
+ * 1. A* ACTUANDO EXCLUSIVAMENTE EN BASE A LO CONOCIDO:
+ *    En lugar de planificar en cada turno una ruta ficticia hasta la meta
+ *    expandiendo miles de celdas desconocidas (UNKNOWN), ahora A* SOLO expande
+ *    celdas confirmadas como libres (CellType.FREE) en el MentalMap.
+ *    - Si la meta ya es conocida (FREE), calcula la ruta directa hasta ella.
+ *    - Si la meta aún está en la niebla (UNKNOWN), calcula la ruta óptima por
+ *      el mapa conocido hasta la mejor celda FRONTERA (celda FREE descubierta
+ *      por los bumpers pero aún no visitada) que minimiza f(n) = g(n) + h(n).
  *
- * 2. HEURÍSTICA MANHATTAN ADMISIBLE (Diapositivas 44 y 52):
- *    Al permitir únicamente 4 movimientos cardinales con coste unitario:
- *    h(s) = |x - x_G| + |y - y_G|
- *    Garantiza que nunca sobreestima el coste restante real.
+ * 2. SIN REPLANIFICACIÓN CONSTANTE (COLA DE PLAN + AVANCE DIRECTO O(1)):
+ *    - Persistencia del plan (currentPlan): Cuando A* calcula un camino de
+ *      varios pasos por el mapa conocido (por ejemplo, para salir de una trampa
+ *      en U o rodear un muro hasta una frontera), guarda toda la secuencia en
+ *      currentPlan y la ejecuta paso a paso en O(1) sin volver a invocar A*.
+ *    - Avance directo hacia frontera óptima: Si el agente no tiene un plan en
+ *      cola y una celda frontera adyacente reduce directamente la distancia
+ *      Manhattan a la meta (alcanzando la cota inferior teórica f = h(start),
+ *      g = 1, visits = 0), avanza hacia ella en O(1) sin lanzar A*.
  *
- * 3. HIPÓTESIS DEL MUNDO LIBRE / EXPLORACIÓN POR FRONTERAS (Diapositivas 88-89):
- *    Las celdas desconocidas (UNKNOWN) se consideran provisionalmente transitables.
- *    Si un sensor bumper detecta un muro imprevisto, se actualiza el mapa mental
- *    y se replanifica instantáneamente en memoria en 0 pasos físicos.
- *
- * 4. PENALIZACIÓN DE VISITAS EN DESEMPATES (Diapositivas 56-59):
- *    En caso de empate en coste f(n) y heurística h(n), se favorece la casilla
- *    con menor número de visitas previas, rompiendo posibles bucles de oscilación.
+ * 3. ESCALABILIDAD A MAPAS MASIVOS:
+ *    El coste computacional depende únicamente de las celdas descubiertas y no
+ *    del tamaño total del mapa (10x10, 500x500 o mayor).
  */
 public class PathPlanner {
 
-    /** Margen de expansión en casillas alrededor del área explorada */
-    private static final int SEARCH_MARGIN = 25;
+    /** Cola persistente con las acciones del plan en curso para evitar replanificar en cada paso */
+    private final Queue<GridAction> currentPlan = new ArrayDeque<>();
 
-    /** Límite de seguridad para evitar bloqueos por recursión en mapas masivos */
-    private static final int MAX_EXPANDED_NODES = 10_000;
+    /** Posición en la que se espera que esté el agente al consumir el siguiente paso del plan */
+    private GridPosition expectedPosition = null;
+
+    /** Contador estadístico de cuántas veces se ha invocado la búsqueda A* (findPath) */
+    private int replanCount = 0;
+
+    /** Contador estadístico del total de nodos expandidos por A* durante toda la ejecución */
+    private int totalExpandedNodes = 0;
 
     /**
-     * Estructura interna de un nodo del árbol de búsqueda A*.
+     * Estructura interna de un nodo del árbol de búsqueda A* sobre el mapa conocido.
      */
     private static final class SearchNode implements Comparable<SearchNode> {
-        final GridPosition position;           // Coordenada (x, y) de la casilla
+        final GridPosition position;           // Coordenada (x, y) de la casilla conocida
         final SearchNode parent;               // Nodo predecesor en el camino
         final GridAction actionFromParent;     // Acción cardinal que llevó a este nodo
-        final int g;                           // Coste real acumulado desde el inicio (1 paso = 1 de coste)
-        final int h;                           // Heurística Manhattan estimada hasta la meta
+        final int g;                           // Coste real acumulado por el mapa conocido desde start
+        final int h;                           // Heurística Manhattan estimada desde esta celda hasta la meta
         final int f;                           // Coste total estimado: f(n) = g(n) + h(n)
         final int visits;                      // Número de veces que el agente ha pisado esta casilla
-        final boolean confirmedFree;           // true si ya ha sido confirmada como libre por sensores
+        final int unknownNeighbors;            // Ganancia de información esperada (vecinos UNKNOWN, Slide 89)
+        final long seq;                        // Orden de inserción canónico (N -> E -> S -> W, Slide 49)
 
         SearchNode(GridPosition position, SearchNode parent, GridAction actionFromParent,
-                   int g, int h, int visits, boolean confirmedFree) {
+                   int g, int h, int visits, int unknownNeighbors, long seq) {
             this.position = position;
             this.parent = parent;
             this.actionFromParent = actionFromParent;
@@ -68,43 +83,50 @@ public class PathPlanner {
             this.h = h;
             this.f = g + h;
             this.visits = visits;
-            this.confirmedFree = confirmedFree;
+            this.unknownNeighbors = unknownNeighbors;
+            this.seq = seq;
         }
 
         /**
-         * Escalera canónica de prioridades para la cola de prioridad (Lista Abierta):
-         * 1. Menor coste total f(n) = g(n) + h(n)
-         * 2. Desempate: Menor heurística h(n) (más cercano a la meta)
-         * 3. Desempate: Menor número de visitas previas (penalización para romper bucles)
-         * 4. Desempate: Preferir celdas confirmadas frente a desconocidas
+         * Ordenación canónica para A* basado en lo conocido (Fronteras - Tema 2, Slides 49 y 89):
+         * 1. Menor coste total f(n) = g(n) + h(n) (Criterio combinado: coste conocido + distancia Manhattan a EVA).
+         * 2. Desempate: Menor distancia real g(n) desde el agente (frontera más cercana, evita retrocesos).
+         * 3. Desempate: Menor número de visitas previas (prioriza fronteras vírgenes visits=0).
+         * 4. Desempate: Mayor información esperada (más vecinos UNKNOWN por descubrir, Slide 89).
+         * 5. Desempate: Orden canónico determinista de inserción (Norte -> Este -> Sur -> Oeste, Slide 49).
          */
         @Override
         public int compareTo(SearchNode other) {
-            // Criterio 1: Menor coste f
+            // Criterio 1: Menor coste total estimado f(n) = g(n) + h(n)
             int cmp = Integer.compare(this.f, other.f);
             if (cmp != 0) return cmp;
 
-            // Criterio 2: Menor distancia estimada a la meta (h)
-            cmp = Integer.compare(this.h, other.h);
+            // Criterio 2: Menor coste real g(n) (frontera más próxima a la posición actual del agente)
+            cmp = Integer.compare(this.g, other.g);
             if (cmp != 0) return cmp;
 
-            // Criterio 3: Penalización de visitas de clase (Tema 2 Slide 56)
+            // Criterio 3: Menor número de visitas previas
             cmp = Integer.compare(this.visits, other.visits);
             if (cmp != 0) return cmp;
 
-            // Criterio 4: Certeza sensorial (FREE confirmada antes que UNKNOWN)
-            return Boolean.compare(other.confirmedFree, this.confirmedFree);
+            // Criterio 4: Mayor información esperada (más celdas UNKNOWN adyacentes, Slide 89)
+            cmp = Integer.compare(other.unknownNeighbors, this.unknownNeighbors);
+            if (cmp != 0) return cmp;
+
+            // Criterio 5: Orden canónico determinista (evita inversión de orden en el heap de PriorityQueue)
+            return Long.compare(this.seq, other.seq);
         }
     }
 
     /**
-     * Calcula la ruta óptima de acciones desde la posición actual hasta la meta
-     * utilizando el conocimiento consolidado en el MentalMap.
+     * Calcula la ruta óptima de acciones actuando EXCLUSIVAMENTE sobre lo conocido
+     * (celdas CellType.FREE en el MentalMap) hasta alcanzar la meta (si ya es conocida)
+     * o la mejor celda FRONTERA conocida.
      *
-     * @param start     Posición de partida del agente
-     * @param target    Posición objetivo a alcanzar
-     * @param mentalMap Memoria espacial del agente con celdas conocidas
-     * @return Lista ordenada de acciones a ejecutar, o lista vacía si no existe ruta alcanzable
+     * @param start     Posición de partida actual del agente
+     * @param target    Posición objetivo final (EVA)
+     * @param mentalMap Memoria espacial del agente con las celdas conocidas
+     * @return Lista ordenada de acciones hasta la frontera/meta, o lista vacía si no hay salida
      */
     public List<GridAction> findPath(GridPosition start, GridPosition target, MentalMap mentalMap) {
         // --- 1. VALIDACIONES INICIALES ---
@@ -112,29 +134,20 @@ public class PathPlanner {
             return Collections.emptyList();
         }
         if (start.equals(target)) {
-            return Collections.emptyList(); // Ya está en la meta
+            return Collections.emptyList();
         }
         if (!mentalMap.isTransitable(target)) {
-            return Collections.emptyList(); // La meta está confirmada como obstáculo
+            return Collections.emptyList();
         }
 
-        // --- 2. LÍMITES DINÁMICOS DE BÚSQUEDA ---
-        int boundMinX = Math.min(Math.min(start.getX(), target.getX()), mentalMap.getMinX()) - SEARCH_MARGIN;
-        int boundMaxX = Math.max(Math.max(start.getX(), target.getX()), mentalMap.getMaxX()) + SEARCH_MARGIN;
-        int boundMinY = Math.min(Math.min(start.getY(), target.getY()), mentalMap.getMinY()) - SEARCH_MARGIN;
-        int boundMaxY = Math.max(Math.max(start.getY(), target.getY()), mentalMap.getMaxY()) + SEARCH_MARGIN;
+        replanCount++;
 
-        // --- 3. ESTRUCTURAS DE DATOS DE BÚSQUEDA A* ---
-        // Lista Abierta: nodos frontera ordenados por compareTo (f, h, visitas)
+        // --- 2. ESTRUCTURAS DE DATOS DE BÚSQUEDA A* EN EL GRAFO CONOCIDO ---
         PriorityQueue<SearchNode> openSet = new PriorityQueue<>();
-
-        // Lista Cerrada: celdas cuyas mejores rutas ya han sido exploradas
         Set<GridPosition> closedSet = new HashSet<>();
-
-        // Registro del menor coste g(n) alcanzado por coordenada
         Map<GridPosition, Integer> bestG = new HashMap<>();
 
-        // Nodo raíz inicial
+        long seqCounter = 0;
         SearchNode root = new SearchNode(
                 start,
                 null,
@@ -142,81 +155,163 @@ public class PathPlanner {
                 0,
                 start.manhattanDistance(target),
                 mentalMap.getVisitCount(start),
-                true
+                mentalMap.countUnknownNeighbors(start),
+                seqCounter++
         );
         openSet.add(root);
         bestG.put(start, 0);
 
-        int nodesExpanded = 0;
-
-        // --- 4. BUCLE PRINCIPAL DE EXPLORACIÓN ---
-        while (!openSet.isEmpty() && nodesExpanded < MAX_EXPANDED_NODES) {
+        // --- 3. BUCLE DE BÚSQUEDA EXCLUSIVAMENTE SOBRE CELDAS CONOCIDAS (FREE) ---
+        while (!openSet.isEmpty()) {
             SearchNode current = openSet.poll();
 
-            // ¿Hemos alcanzado el objetivo? Reconstruir y devolver ruta
-            if (current.position.equals(target)) {
+            // Condición de parada en base a lo conocido:
+            // - Hemos llegado a la meta G, o
+            // - Hemos llegado a la mejor celda FRONTERA conocida (FREE, no visitada y junto a terreno UNKNOWN).
+            if (!current.position.equals(start)
+                    && (current.position.equals(target) || mentalMap.isFrontier(current.position))) {
                 return reconstructActions(current);
             }
 
-            // Si la celda ya fue cerrada con mejor coste, ignorar duplicados
             if (!closedSet.add(current.position)) {
                 continue;
             }
-            nodesExpanded++;
+            totalExpandedNodes++;
 
-            // --- 5. EVALUACIÓN DE VECINOS CARDINALES (N, E, S, W) ---
+            // Expandir únicamente vecinos cardinales que YA sean conocidos como FREE
             for (GridAction action : GridAction.values()) {
                 GridPosition neighborPos = current.position.neighbor(action);
 
-                // Descartar si excede los márgenes de seguridad del mapa
-                if (neighborPos.getX() < boundMinX || neighborPos.getX() > boundMaxX
-                        || neighborPos.getY() < boundMinY || neighborPos.getY() > boundMaxY) {
-                    continue;
-                }
-
-                // Descartar si ya fue explorado o está confirmado como obstáculo
-                if (closedSet.contains(neighborPos) || !mentalMap.isTransitable(neighborPos)) {
+                if (closedSet.contains(neighborPos) || !mentalMap.isKnownFree(neighborPos)) {
                     continue;
                 }
 
                 int tentativeG = current.g + 1;
                 Integer previousBestG = bestG.get(neighborPos);
 
-                // Si encontramos un camino más corto hacia este vecino, actualizar
                 if (previousBestG == null || tentativeG < previousBestG) {
                     bestG.put(neighborPos, tentativeG);
                     int h = neighborPos.manhattanDistance(target);
                     int visits = mentalMap.getVisitCount(neighborPos);
-                    boolean isFree = mentalMap.getCellType(neighborPos) == CellType.FREE;
+                    int unknownNeighbors = mentalMap.countUnknownNeighbors(neighborPos);
 
                     SearchNode neighborNode = new SearchNode(
-                            neighborPos, current, action, tentativeG, h, visits, isFree
+                            neighborPos, current, action, tentativeG, h, visits, unknownNeighbors, seqCounter++
                     );
                     openSet.add(neighborNode);
                 }
             }
         }
 
-        // Si se vacía la cola sin llegar a la meta, no existe ruta transitable conocida
+        // Si se agotan las celdas FREE conocidas sin encontrar ninguna frontera ni la meta, no existe salida
         return Collections.emptyList();
     }
 
     /**
-     * Obtiene únicamente la primera acción inmediata que el agente debe ejecutar.
-     * Si no existe camino posible, devuelve Optional.empty() para permitir una
-     * detención segura y controlada sin chocar contra muros.
+     * Decide la siguiente acción sin replanificar innecesariamente:
+     * 1. Si hay un plan activo en cola (currentPlan) sobre celdas FREE conocidas, consume el siguiente paso en O(1).
+     * 2. Si hay una celda frontera adyacente que acerca directamente a la meta (cota mínima f = h(start), g = 1),
+     *    avanza directamente hacia ella en O(1) sin necesidad de lanzar A*.
+     * 3. Solo cuando un obstáculo impide avanzar directamente, ejecuta A* sobre el mapa conocido (MentalMap)
+     *    para calcular la ruta hasta la mejor frontera disponible y la almacena en currentPlan.
      */
     public Optional<GridAction> findNextAction(GridPosition start, GridPosition target, MentalMap mentalMap) {
-        List<GridAction> path = findPath(start, target, mentalMap);
-        if (path.isEmpty()) {
+        if (start == null || target == null || mentalMap == null || start.equals(target)) {
+            currentPlan.clear();
             return Optional.empty();
         }
-        return Optional.of(path.get(0));
+
+        // 1. Reutilizar el plan activo si sigue siendo válido
+        if (!currentPlan.isEmpty() && start.equals(expectedPosition)) {
+            GridAction nextAction = currentPlan.peek();
+            GridPosition nextPos = start.neighbor(nextAction);
+            if (mentalMap.isKnownFree(nextPos)) {
+                currentPlan.poll();
+                expectedPosition = nextPos;
+                return Optional.of(nextAction);
+            }
+            currentPlan.clear();
+        } else {
+            currentPlan.clear();
+        }
+
+        // 2. Avance directo en O(1) si existe una frontera inmediata que reduce la distancia Manhattan a la meta
+        GridAction directAction = findDirectForwardFrontier(start, target, mentalMap);
+        if (directAction != null) {
+            expectedPosition = start.neighbor(directAction);
+            return Optional.of(directAction);
+        }
+
+        // 3. Planificar con A* sobre el mapa conocido hasta la mejor frontera (o hasta la meta)
+        List<GridAction> newPlan = findPath(start, target, mentalMap);
+        if (newPlan.isEmpty()) {
+            expectedPosition = null;
+            return Optional.empty();
+        }
+
+        currentPlan.addAll(newPlan);
+        GridAction firstAction = currentPlan.poll();
+        expectedPosition = start.neighbor(firstAction);
+        return Optional.of(firstAction);
     }
 
     /**
-     * Reconstruye la secuencia ordenada de acciones desde el nodo inicial hasta la meta
-     * siguiendo la cadena de punteros 'parent'.
+     * Comprueba en O(1) si alguno de los 4 vecinos cardinales conocidos como FREE es la meta o una frontera
+     * no visitada que reduce directamente la distancia Manhattan h(n) = h(start) - 1.
+     * Por consistencia de la heurística Manhattan, dicho vecino alcanza el mínimo global teórico f = h(start) y g = 1.
+     */
+    private GridAction findDirectForwardFrontier(GridPosition start, GridPosition target, MentalMap mentalMap) {
+        if (!mentalMap.isTransitable(target)) {
+            return null;
+        }
+        int currentH = start.manhattanDistance(target);
+        GridAction bestAction = null;
+        int bestUnknownNeighbors = -1;
+
+        for (GridAction action : GridAction.values()) {
+            GridPosition neighbor = start.neighbor(action);
+            if (!mentalMap.isKnownFree(neighbor)) {
+                continue;
+            }
+            if (neighbor.equals(target)) {
+                return action;
+            }
+            if (neighbor.manhattanDistance(target) < currentH && mentalMap.isFrontier(neighbor)) {
+                int unknown = mentalMap.countUnknownNeighbors(neighbor);
+                if (unknown > bestUnknownNeighbors) {
+                    bestUnknownNeighbors = unknown;
+                    bestAction = action;
+                }
+            }
+        }
+        return bestAction;
+    }
+
+    /**
+     * Invalida manualmente el plan en caché para forzar una replanificación limpia.
+     */
+    public void clearPlan() {
+        currentPlan.clear();
+        expectedPosition = null;
+    }
+
+    public int getReplanCount() {
+        return replanCount;
+    }
+
+    public int getTotalExpandedNodes() {
+        return totalExpandedNodes;
+    }
+
+    /**
+     * Devuelve una copia inmutable de las acciones que quedan actualmente en la cola del plan.
+     */
+    public List<GridAction> getCurrentPlanSnapshot() {
+        return new ArrayList<>(currentPlan);
+    }
+
+    /**
+     * Reconstruye la secuencia ordenada de acciones desde start hasta la frontera/meta elegida.
      */
     private List<GridAction> reconstructActions(SearchNode goalNode) {
         List<GridAction> actions = new ArrayList<>();
