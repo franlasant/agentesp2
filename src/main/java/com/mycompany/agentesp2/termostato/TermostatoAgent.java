@@ -49,7 +49,14 @@ public class TermostatoAgent extends Agent {
     private long resolveChallengeId() throws DbaException {
         Object[] args = getArguments();
         if (args != null && args.length > 0 && args[0] != null) {
-            return Long.parseLong(args[0].toString());
+            String str = args[0].toString().trim();
+            if (str.toLowerCase().startsWith("id:") || str.toLowerCase().startsWith("id=")) {
+                str = str.substring(3).trim();
+            }
+            try {
+                return Long.parseLong(str);
+            } catch (NumberFormatException ignored) {
+            }
         }
         return client.findChallengeIdByType("THERMOSTAT");
     }

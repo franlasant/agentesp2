@@ -4,6 +4,10 @@ import sys
 import time
 import re
 
+TERMOSTATO = [
+    (1, "Termostato - Control de temperatura"),
+]
+
 FASE1 = [
     (2, "Fase 1 - 01 - Campo abierto"),
     (3, "Fase 1 - 02 - Muro vertical"),
@@ -28,17 +32,35 @@ FASE2 = [
     (19, "Fase 2 - 11 - Obstáculos dispersos B"),
 ]
 
+ALL_CHALLENGES = TERMOSTATO + FASE1 + FASE2
+
 mode = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
 
-if mode == "fase1":
+if mode == "grid":
+    challenges = FASE1 + FASE2
+    title = "GRID (18 RETOS: FASE 1 + FASE 2)"
+elif mode == "fase1":
     challenges = FASE1
     title = "FASE 1 (7 RETOS ESTÁNDAR 10x10)"
 elif mode == "fase2":
     challenges = FASE2
     title = "FASE 2 (11 RETOS NUEVOS Y COMPLEJOS)"
+elif mode == "termostato":
+    challenges = TERMOSTATO
+    title = "TERMOSTATO (1 RETO)"
+elif "-" in mode or ".." in mode:
+    sep = ".." if ".." in mode else "-"
+    parts = mode.split(sep)
+    start_id, end_id = int(parts[0]), int(parts[1])
+    challenges = [c for c in ALL_CHALLENGES if start_id <= c[0] <= end_id]
+    title = f"RANGO {start_id} A {end_id}"
+elif mode.isdigit():
+    target_id = int(mode)
+    challenges = [c for c in ALL_CHALLENGES if c[0] == target_id]
+    title = f"RETO INDIVIDUAL {target_id}"
 else:
-    challenges = FASE1 + FASE2
-    title = "COMPLETA (18 RETOS: FASE 1 + FASE 2)"
+    challenges = ALL_CHALLENGES
+    title = "COMPLETA (19 RETOS: TERMOSTATO + FASE 1 + FASE 2)"
 
 os.makedirs("logs_runs", exist_ok=True)
 results = []
@@ -54,8 +76,13 @@ for cid, cname in challenges:
     
     env = os.environ.copy()
     env["JADE_GUI"] = "false"
+    env["JADE_STANDALONE"] = "true"
     
-    cmd = ["./run.sh", "grid", f"id:{cid}"]
+    if cid == 1:
+        cmd = ["./run.sh", "termostato", f"id:{cid}"]
+    else:
+        cmd = ["./run.sh", "grid", f"id:{cid}"]
+
     with open(log_path, "w", encoding="utf-8") as log_file:
         proc = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
     
@@ -70,7 +97,7 @@ for cid, cname in challenges:
     status_match = re.search(r"Estado final:\s*([A-Za-z_]+)", content)
     if not status_match:
         status_match = re.search(r"FIN DEL RUN \d+.*?:\s*([A-Za-z_]+)", content)
-    status = status_match.group(1) if status_match else ("SUCCEEDED" if "TARGET_REACHED" in content else "FAILED")
+    status = status_match.group(1) if status_match else ("SUCCEEDED" if "TARGET_REACHED" in content or "SUCCEEDED" in content else "FAILED")
     
     reason_match = re.search(r"Razón:\s*([A-Za-z_]+)", content)
     reason = reason_match.group(1) if reason_match else ("TARGET_REACHED" if "TARGET_REACHED" in content else "UNKNOWN")

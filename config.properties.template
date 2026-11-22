@@ -4,3 +4,7 @@
 
 DBA_LAB_URL=http://orca.ugr.es:8080
 DBA_TOKEN=tu-token-personal-aqui
+
+# Retardo mínimo obligatorio entre peticiones en milisegundos (al menos 500 ms = 0.5 s).
+# Requerido explícitamente para proteger el disipador térmico y la CPU del servidor DBA Lab.
+DBA_REQUEST_DELAY_MS=500
