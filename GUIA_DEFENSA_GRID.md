@@ -2,434 +2,268 @@
 **Asignatura:** Diseño Basado en Agentes (DBA) — Curso 2026/2027  
 **Profesor:** Manuel Jesús Cobo Martín — Universidad de Granada (UGR)  
 
+> [!TIP]
+> **Objetivo de esta guía:** Que cualquier miembro del equipo entienda de forma sencilla qué hace cada clase del proyecto, cómo se conectan entre ellas y cómo responder con seguridad a las preguntas del profesor en la defensa.
+
 ---
 
-## 1. Estructura General del Proyecto y Paquetes
+## 1. Visión Rápida: ¿Qué hace nuestro proyecto y cómo se relacionan las clases?
 
-Todo el código fuente ejecutable del proyecto se aloja en el paquete raíz `com.mycompany.agentesp2`:
+En el bloque **Grid 2D**, nuestro agente (Wall-e) debe ir desde una casilla de salida hasta una meta (EVA) en un mapa desconocido. Sabemos **dónde está la meta** (nos lo dice el sensor `grid.target` al empezar), pero **no sabemos dónde están los muros**; solo los vamos descubriendo paso a paso con 4 sensores de contacto (*bumpers*: Norte, Este, Sur y Oeste).
+
+Para resolverlo de forma limpia y modular, dividimos el proyecto en **5 piezas que colaboran entre sí**:
+
+```mermaid
+flowchart TD
+    MAIN["Main.java / run.sh<br/>(Punto de entrada y lanzador JADE)"] --> AGENT["GridAgent.java<br/>(El Director de Orquesta en JADE)"]
+    MAIN --> GUI_SIM["GridVisualizerGui.java<br/>(Simulador visual offline: ./run.sh gui)"]
+
+    AGENT <-->|"1. Pide sensores / Envía movimientos<br/>(HTTP REST + Delay 500ms + Idempotencia)"| CLIENT["DbaClient.java<br/>(Mensajero con el servidor DBA Lab)"]
+    AGENT -->|"2. Guarda percepciones actuales<br/>(Posición, Meta, Bumpers, Energía)"| STATE["model/grid/*<br/>(GridState, GridPosition, GridBumpers...)"]
+    AGENT -->|"3. Actualiza lo descubierto<br/>(Muros, Libres, Visitas, Fronteras)"| MAP["MentalMap.java<br/>(La Memoria del Agente)"]
+    AGENT -->|"4. Pide el siguiente paso"| PLANNER["PathPlanner.java<br/>(El Cerebro: Avance Directo + A* Conocido)"]
+    PLANNER -->|"Consulta celdas FREE y Fronteras"| MAP
+    AGENT -.->|"5. Dibuja en vivo"| GUI_SIM
+```
+
+### Resumen en una frase de cada clase del Grid
+
+| Clase | Analogía sencilla | ¿Qué hace exactamente? |
+| :--- | :--- | :--- |
+| **`Main.java`** | El interruptor de arranque | Lee qué quieres ejecutar (`server`, `grid`, `termostato`, `gui`), comprueba si el servidor JADE ya está encendido en el puerto 1099 y lanza el agente con un nombre único (`grid_<timestamp>`). |
+| **`DbaClient.java`** | El teléfono / mensajero | Habla por HTTP con el servidor `orca.ugr.es`. Aplica un retardo de **500 ms** entre peticiones (protección térmica del servidor) y controla que nunca se repita un movimiento físico si falla la red (idempotencia). |
+| **`GridState.java`** *(y resto de `model/grid/`)* | La ficha de datos del turno | Agrupa en objetos Java limpios lo que el agente percibe en este instante: dónde está (`GridPosition`), dónde está la meta, qué detectan los 4 `GridBumpers`, cuánta `GridEnergy` queda y el `RunControl` del servidor. |
+| **`MentalMap.java`** | El cuaderno de apuntes (Memoria) | Guarda en un `HashMap` únicamente las casillas que el agente ha descubierto (`FREE` o `OBSTACLE`), cuántas veces ha pisado cada una (`visitCounts`) e identifica qué casillas son **Fronteras** (`isFrontier`). |
+| **`PathPlanner.java`** | El cerebro / GPS inteligente | Decide cuál es el siguiente movimiento (`NORTH`, `EAST`, `SOUTH`, `WEST`). **Solo llama a $A^*$ cuando un muro bloquea el camino directo**, y cuando lo hace, busca únicamente sobre el mapa conocido y guarda el plan en cola (`currentPlan`). |
+| **`GridAgent.java`** | El director de orquesta (Agente JADE) | Ejecuta el ciclo de vida de JADE (`setup`, `NavegacionBehaviour`, `takeDown`). En cada turno coordina: leer sensores (`see`) $\to$ actualizar `MentalMap` (`next`) $\to$ pedir paso a `PathPlanner` y moverse (`action`). |
+| **`GridVisualizerGui.java`** | La pantalla de radar | Interfaz gráfica en Swing. Sirve tanto para probar 10 mapas en local sin internet (`./run.sh gui`) como para ver en vivo al agente real cuando se conecta a DBA Lab (`./run.sh grid <N>`). |
+
+---
+
+## 2. Estructura Completa de Carpetas
 
 ```text
 agentesp2/
 ├── pom.xml                               # Configuración Maven (Java 17, JADE 4.6.0, org.json, JUnit)
-├── config.properties                     # DBA_LAB_URL y DBA_TOKEN
-├── run.sh                                # Script de automatización de compilación, tests y ejecución
+├── config.properties                     # DBA_LAB_URL, DBA_TOKEN y DBA_REQUEST_DELAY_MS=500
+├── run.sh                                # Script rápido: gui, server, grid, termostato, test-unit
+├── batch_runner.py                       # Ejecutor automático de los 19 retos en DBA Lab
 └── src/
     ├── main/java/com/mycompany/agentesp2/
-    │   ├── Main.java                     # Lanzador unificado con selector de agente (grid/termostato)
-    │   ├── TestConexion.java             # Comprobación de conectividad sin consumir ejecuciones
-    │   │
-    │   ├── api/                          # [REUTILIZADO Y EXTENDIDO] Capa de Comunicación REST
-    │   │   ├── DbaClient.java            # Cliente HTTP con soporte Grid e Idempotencia
-    │   │   └── DbaException.java         # Excepciones tipadas con código de estado HTTP
-    │   │
-    │   ├── model/                        # [REUTILIZADO Y EXTENDIDO] Modelos Comunes y Dominio
-    │   │   ├── RunStatus.java            # Enum universal: ACTIVE, SUCCEEDED, FAILED, EXPIRED, etc.
-    │   │   ├── RunControl.java           # DTO transversal: runId, runStatus, reasonCode, actionStatus
-    │   │   ├── ThermostatAction.java     # [NO USADO EN GRID] Exclusivo de control térmico
-    │   │   ├── ThermostatState.java      # [NO USADO EN GRID] Exclusivo de control térmico
-    │   │   └── grid/                     # [NUEVO] Modelos específicos de Navegación 2D
-    │   │       ├── GridAction.java       # Enum cardinal: NORTH, EAST, SOUTH, WEST (dx, dy)
-    │   │       ├── GridPosition.java     # Coordenada inmutable (x, y), Manhattan, equals/hashCode
-    │   │       ├── GridBumpers.java      # Sensores de colisión [N, E, S, W] e isSafe(action)
-    │   │       ├── GridEnergy.java       # Saldo de energía ("FINITE", remaining) y hasEnergy()
-    │   │       └── GridState.java        # DTO agregador de percepciones de Grid y RunControl
-    │   │
-    │   ├── termostato/                   # [NO USADO EN GRID] Capa de Agente Térmico
-    │   │   └── TermostatoAgent.java      # Agente JADE específico del Bloque 1
-    │   │
-    │   └── grid/                         # [NUEVO] Capa de Agente y Navegación 2D
-    │       ├── GridAgent.java            # Agente JADE con NavegacionBehaviour y doble validación
-    │       └── navigation/               # Cerebro Algorítmico y Memoria
-    │           ├── CellType.java         # Enum: FREE, OBSTACLE, UNKNOWN
-    │           ├── MentalMap.java        # Memoria espacial dinámica (HashMap) y render ASCII
-    │           └── PathPlanner.java      # Algoritmo Optimistic Online A* con desempate cuádruple
-    │
-    └── test/java/com/mycompany/agentesp2/grid/ # [NUEVO] Tests Unitarios Offline
-        ├── GridPositionTest.java         # Tests de geometría, Manhattan y parseo JSON
-        └── PathPlannerTest.java          # Simulador local offline de los 7 mapas y meta inalcanzable
+    │   ├── Main.java                     # Lanzador unificado (gui / server / grid / termostato)
+    │   ├── TestConexion.java             # Diagnóstico de conexión con DBA Lab sin gastar runs
+    │   ├── api/                          # [COMPARTIDO CON BLOQUE 1]
+    │   │   ├── DbaClient.java            # Cliente HTTP REST, delay térmico 500ms e idempotencia
+    │   │   └── DbaException.java         # Excepciones tipadas con código HTTP
+    │   ├── model/                        # [COMPARTIDO Y EXTENDIDO]
+    │   │   ├── RunStatus.java            # ACTIVE, SUCCEEDED, FAILED, EXPIRED, CANCELLED
+    │   │   ├── RunControl.java           # runId, runStatus, reasonCode, actionStatus
+    │   │   └── grid/                     # Modelos específicos de Grid 2D
+    │   │       ├── GridAction.java       # MOVE_NORTH, MOVE_EAST, MOVE_SOUTH, MOVE_WEST
+    │   │       ├── GridPosition.java     # Coordenada (x, y) inmutable + manhattanDistance()
+    │   │       ├── GridBumpers.java      # Sensores [N, E, S, W] e isSafe(action)
+    │   │       ├── GridEnergy.java       # Energía restante y hasEnergy()
+    │   │       └── GridState.java        # Estado consolidado del turno actual
+    │   ├── termostato/                   # [BLOQUE 1 - NO USADO EN GRID]
+    │   │   └── TermostatoAgent.java
+    │   └── grid/                         # [BLOQUE 2 - NAVEGACIÓN 2D]
+    │       ├── GridAgent.java            # Agente JADE + ciclo see/next/action
+    │       ├── gui/
+    │       │   └── GridVisualizerGui.java # Interfaz gráfica Swing (Simulador + Monitor en vivo)
+    │       └── navigation/
+    │           ├── CellType.java         # FREE, OBSTACLE, UNKNOWN
+    │           ├── MentalMap.java        # Mapa disperso, contador de visitas y detección de fronteras
+    │           └── PathPlanner.java      # Avance directo O(1) + Cola currentPlan + A* sobre lo conocido
+    └── test/java/com/mycompany/agentesp2/
+        ├── api/DbaClientDelayTest.java   # Verifica el retardo térmico de 500 ms
+        └── grid/
+            ├── GridPositionTest.java     # Tests de coordenadas y distancia Manhattan
+            └── PathPlannerTest.java      # Simulador offline (7 mapas 10x10 + encerrada + masivo 100x100)
 ```
 
 ---
 
-## 2. Matriz Integral de Ficheros: Reutilizados, No Utilizados y Creados
+## 3. Cómo funciona nuestro Cerebro Algorítmico (`PathPlanner.java`)
 
-### 2.1. Ficheros REUTILIZADOS del Bloque 1 (y por qué)
+> [!IMPORTANT]
+> **Punto clave de la defensa (la mejora pedida por el profesor):**  
+> En una versión inicial, el agente ejecutaba $A^*$ en **cada paso** intentando calcular una ruta hasta la meta atravesando todo el mapa desconocido (`UNKNOWN`). Eso funcionaba en mapas pequeños de $10 \times 10$, pero en **mapas masivos** ($100 \times 100$, $500 \times 500$...) sería lentísimo porque $A^*$ expandiría miles de casillas imaginarias en cada turno y tiraría la ruta tras dar un solo paso.
 
-Gracias al diseño por capas implementado en la fase anterior, gran parte de la infraestructura técnica es 100% independiente del tipo de problema:
+Para resolverlo de forma **sencilla, óptima y escalable a mapas masivos**, `PathPlanner.findNextAction()` funciona ahora en **3 niveles en cascada**:
 
-| Fichero y Paquete | Rol | Justificación de Diseño y Reutilización |
-| :--- | :--- | :--- |
-| **`api/DbaClient.java`**<br>`com.mycompany.agentesp2.api` | Cliente HTTP REST | Reutiliza la gestión de conexión con `java.net.http.HttpClient`, cabecera `Authorization: Bearer`, serialización con `org.json`, control de errores, lectura de variables de entorno y el `ShutdownHook` de la JVM con `.active_run_id`. Solo se añadieron métodos de conveniencia para Grid sin alterar la base. |
-| **`api/DbaException.java`**<br>`com.mycompany.agentesp2.api` | Excepción tipada | Centraliza el manejo de códigos de estado HTTP (401, 404, 409, 422, 503) y códigos de error del servidor de forma idéntica para cualquier reto de DBA Lab. |
-| **`model/RunStatus.java`**<br>`com.mycompany.agentesp2.model` | Enum de estado de run | Define los estados universales de un run (`ACTIVE`, `SUCCEEDED`, `FAILED`, `EXPIRED`, `CANCELLED`). Es un concepto transversal del laboratorio, independiente de si el agente es un termostato o un robot móvil. |
-| **`model/RunControl.java`**<br>`com.mycompany.agentesp2.model` | DTO de telemetría | Encapsula el bloque común `"control"` devuelto por el servidor (`runId`, `runStatus`, `reasonCode`, `actionStatus`). Se reutiliza tanto al recibir respuestas de acciones como al consultar sensores. |
-| **`Main.java`**<br>`com.mycompany.agentesp2` | Punto de entrada | Se adaptó para actuar como lanzador unificado: analiza argumentos por consola para arrancar `grid` o `termostato`, selecciona retos numéricos y gestiona la conexión con el contenedor principal JADE. |
-| **`TestConexion.java`**<br>`com.mycompany.agentesp2` | Test de conectividad | Permite diagnosticar en 1 segundo si el servidor universitario `orca.ugr.es` está online y listar todos los retos disponibles sin gastar ejecuciones. |
-| **`run.sh`** | Script de terminal | Automatiza `mvn compile`, `mvn test` y la ejecución de ambos agentes mediante subcomandos (`./run.sh grid 1`, `./run.sh test-unit`, etc.). |
-| **`config.properties`** | Configuración externa | Almacena `DBA_LAB_URL` y `DBA_TOKEN`, válidos para toda la asignatura. |
-| **`pom.xml`** | Descriptor Maven | Mantiene las dependencias compartidas: JADE 4.6.0, `org.json` y el framework de pruebas JUnit. |
+```mermaid
+flowchart TD
+    START["findNextAction(start, target, mentalMap)"] --> P1{"Nivel 1: ¿Hay pasos guardados<br/>en la cola currentPlan?"}
+    P1 -- "Sí (y la celda sigue FREE)" --> R1["⚡ Sacar siguiente paso de currentPlan<br/>Coste O(1) — 0 llamadas a A*"]
+    P1 -- "No (cola vacía)" --> P2{"Nivel 2: ¿Hay un vecino libre nuevo<br/>que acerque directamente a la meta?"}
+    P2 -- "Sí (h_vecino < h_actual)" --> R2["⚡ Avance Directo hacia la meta<br/>Coste O(1) — 0 llamadas a A*"]
+    P2 -- "No (un muro bloquea el avance directo)" --> P3["🧠 Nivel 3: Ejecutar A* SOLO sobre<br/>las celdas FREE conocidas hasta la mejor FRONTERA"]
+    P3 --> R3["Guardar toda la ruta en currentPlan<br/>y devolver el primer paso"]
+```
 
----
+### Nivel 1: Reutilizar el plan guardado (`currentPlan`) — ¡Sin replanificar!
+* Cuando $A^*$ calcula una ruta de varios pasos por el mapa conocido (por ejemplo, 8 pasos para salir de una barrera en U hasta una frontera despejada), guarda todos esos pasos en una cola: `Queue<GridAction> currentPlan`.
+* En los turnos siguientes, como toda esa ruta pasa por casillas ya confirmadas como `FREE`, el agente **no vuelve a ejecutar $A^*$**: simplemente extrae el siguiente paso con `currentPlan.poll()` en tiempo **$O(1)$**.
 
-### 2.2. Ficheros NO UTILIZADOS en el Bloque Grid (y por qué)
+### Nivel 2: Avance Directo sin llamar a $A^*$ (`findDirectForwardFrontier`)
+* Si no hay plan en cola, antes de crear colas de prioridad ni ejecutar $A^*$, el agente mira únicamente sus **4 casillas vecinas inmediatas** (Norte, Este, Sur, Oeste).
+* Comprueba si alguna cumple 3 condiciones:
+  1. Está confirmada como libre (`isKnownFree`).
+  2. Es la meta o es una casilla frontera nueva (`isFrontier`, nunca pisada y junto a terreno desconocido).
+  3. **Reduce la distancia Manhattan a la meta** ($h_{\text{vecino}} = h_{\text{actual}} - 1$).
+* **¿Por qué esto es matemáticamente equivalente a $A^*$?**  
+  Porque la distancia Manhattan es la cota mínima posible: si damos 1 paso ($g=1$) que reduce la distancia en 1 ($h = h_{\text{actual}} - 1$), el coste total es $f = g + h = 1 + (h_{\text{actual}} - 1) = h_{\text{actual}}$. Ningún otro camino del mapa puede mejorar ese valor. Por tanto, **avanzar directamente en $O(1)$ elige exactamente la misma casilla que elegiría $A^*$**, pero haciendo **0 llamadas a $A^*$** en campo abierto y en todos los tramos rectos despejados.
 
-Estos ficheros forman parte del proyecto pero corresponden exclusivamente a la lógica del Bloque 1 (Termostato):
+### Nivel 3: $A^*$ actuando exclusivamente sobre lo conocido (Exploración por Fronteras)
+* **¿Cuándo se llama a $A^*$?** Únicamente cuando la cola `currentPlan` está vacía **y** un obstáculo nos impide acercarnos directamente a la meta (es decir, ninguno de los 4 vecinos libres reduce $h$).
+* **¿Sobre qué busca $A^*$?** **Exclusivamente sobre celdas `CellType.FREE` ya descubiertas en el `MentalMap`**. Jamás expande celdas `UNKNOWN` (`?`).
+* **¿Cuándo para $A^*$?** En cuanto saca de la cola de prioridad:
+  * La meta $G$ (si ya ha sido vista como libre), **o**
+  * La mejor **celda Frontera** (`MentalMap.isFrontier`): una celda que los bumpers ya confirmaron como `FREE`, que el agente aún no ha pisado (`visitCount == 0`) y que tiene al menos un vecino `UNKNOWN` (`?`) por descubrir (Tema 2, Diapositivas 88-89).
+* **Escalabilidad a mapas masivos:** Como $A^*$ nunca entra en la zona desconocida (`?`), da igual si el mapa mide $10 \times 10$ o $10.000 \times 10.000$: el grafo de búsqueda solo contiene las casillas que el robot ha descubierto hasta ese momento.
 
-| Fichero y Paquete | Motivo por el que NO interviene en Grid 2D |
-| :--- | :--- |
-| **`termostato/TermostatoAgent.java`**<br>`com.mycompany.agentesp2.termostato` | Agente JADE específico de control térmico. Su comportamiento (`ControlTemperaturaBehaviour`) regula una variable escalar unidimensional continua (temperatura) contra perturbaciones. El agente Grid requiere navegación espacial en dos dimensiones con percepción parcial. |
-| **`model/ThermostatAction.java`**<br>`com.mycompany.agentesp2.model` | Enum con las acciones físicas del refrigerador: `REFRIGERATION_ON` y `REFRIGERATION_OFF`. Incompatible con el espacio de acciones de navegación en cuadrícula. |
-| **`model/ThermostatState.java`**<br>`com.mycompany.agentesp2.model` | DTO específico de sensores térmicos: temperatura actual, temperatura objetivo y límites de seguridad `[lower, upper]`. |
-| **Métodos de termostato en `DbaClient.java`** (`initThermostatState`, `refreshThermostatTemperature`, `sendAction`) | Métodos que consultan el sensor `thermostat.temperature` y envían acciones de refrigeración. El agente `GridAgent` no los invoca jamás. |
-
----
-
-### 2.3. Ficheros CREADOS NUEVOS para Grid 2D
-
-| Fichero y Paquete | Responsabilidad en la Navegación 2D |
-| :--- | :--- |
-| **`model/grid/GridAction.java`** | Enum con las 4 acciones cardinales (`MOVE_NORTH`, `MOVE_EAST`, `MOVE_SOUTH`, `MOVE_WEST`), vectores $(\Delta x, \Delta y)$ y acción inversa `opposite()`. |
-| **`model/grid/GridPosition.java`** | Coordenada inmutable $(x, y)$, distancia Manhattan, vecinos y métodos estrictos `equals()` y `hashCode()` para búsquedas en grafos. |
-| **`model/grid/GridBumpers.java`** | Sensores de proximidad en 4 direcciones y método de seguridad preventiva `isSafe(action)`. |
-| **`model/grid/GridEnergy.java`** | Saldo de batería restante (`remaining`) y control de parada antes de agotamiento. |
-| **`model/grid/GridState.java`** | DTO centralizador de la percepción del agente (posición, meta, bumpers, energía y `RunControl`). |
-| **`grid/navigation/CellType.java`** | Estados epistemológicos de las casillas: `FREE`, `OBSTACLE` y `UNKNOWN`. |
-| **`grid/navigation/MentalMap.java`** | Mapa mental dinámico sobre `HashMap` (sin asumir tamaño prefijado), contador de visitas y renderizador ASCII. |
-| **`grid/navigation/PathPlanner.java`** | Algoritmo **Optimistic Online $A^*$** con cola de prioridad y desempate cuádruple. |
-| **`grid/GridAgent.java`** | Agente JADE con `NavegacionBehaviour`, doble validación contra choques y cierre seguro en `takeDown()`. |
-| **`test/grid/GridPositionTest.java`** | Tests unitarios de geometría, cálculo de adyacencia y parseo JSON. |
-| **`test/grid/PathPlannerTest.java`** | Simulador offline en memoria que valida la resolución de los 7 mapas y meta inalcanzable sin internet. |
+### Criterios de prioridad de $A^*$ en `SearchNode.compareTo`
+Para elegir la mejor frontera sin oscilar entre los extremos de un muro:
+1. **Menor $f(n) = g(n) + h(n)$:** Minimiza los pasos por el mapa conocido hasta la frontera ($g$) más la distancia Manhattan desde esa frontera hasta la meta ($h$).
+2. **Menor $g(n)$ (frontera más cercana al agente):** A igualdad de $f(n)$ (típico entre los dos lados de un muro), prefiere la frontera que está más cerca de donde estamos ahora, evitando dar media vuelta y retroceder inútilmente.
+3. **Menor número de visitas (`visits`):** Prioriza fronteras vírgenes (`visits = 0`).
+4. **Mayor información esperada (`unknownNeighbors`):** Prefiere la frontera que descubre más casillas `?` nuevas (Diapositiva 89).
+5. **Orden canónico determinista (`seq`):** Respeta el orden `Norte -> Este -> Sur -> Oeste` (Diapositiva 49).
 
 ---
 
-## 3. Ciclo de Ejecución en Cada Paso Temporal
+## 4. Ciclo de Ejecución Paso a Paso en `GridAgent.java`
 
-En cada ejecución de `action()` dentro del comportamiento `NavegacionBehaviour` de `GridAgent.java`:
+En cada iteración de `NavegacionBehaviour.action()` se sigue el ciclo formal de agentes con estado interno del Tema 2 (**`next` $\to$ `action` $\to$ `see`**):
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Agent as GridAgent (NavegacionBehaviour)
+    participant Agent as GridAgent (JADE)
     participant Map as MentalMap
-    participant Planner as PathPlanner (A*)
+    participant Planner as PathPlanner
     participant Client as DbaClient
     participant Server as DBA Lab API
 
-    Agent->>Map: 1. updateFromPerceptions(currentPosition, bumpers)
-    Map-->>Agent: Marca posición actual (+) y vecinos [OBSTACLE(#)/FREE(.)]
-    Agent->>Agent: 2. Imprime telemetría y mapa ASCII en consola
-    Agent->>Planner: 3. findNextAction(current, target, mentalMap)
-    Planner-->>Agent: Propone siguiente acción candidate (ej. MOVE_SOUTH)
-    Agent->>Agent: 4. Doble validación: bumpers.isSafe(candidate)?
-    alt Bumper bloqueado físicamente
-        Agent->>Map: markObstacle(neighbor) y replanifica en memoria (0 coste de red)
-    else Bumper despejado
-        Agent->>Client: 5. sendGridAction(runId, nextAction)
-        Client->>Server: POST /api/v1/runs/{id}/actions {"actionCode": "..."}
-        Server-->>Client: 200 OK {"control": {"runStatus": "ACTIVE", ...}}
-        Client-->>Agent: RunControl actualizado
-        alt Run en estado terminal (SUCCEEDED o FAILED)
-            Agent->>Agent: Muestra mapa final (★) y finaliza con doDelete()
-        else Run continúa ACTIVE
-            Agent->>Client: 6. refreshGridState(state)
-            Client->>Server: GET position, bumpers y energy
-            Server-->>Client: Percepciones del nuevo turno
-            Client-->>Agent: Estado actualizado para el siguiente ciclo
-        end
+    Agent->>Map: 1. FASE NEXT: updateFromPerceptions(pos, bumpers)
+    Map-->>Agent: Marca pos actual como visitada y vecinos como FREE (#) u OBSTACLE
+    Agent->>Planner: 2. FASE ACTION: findNextAction(pos, target, mentalMap)
+    alt Hay plan en cola O vecino directo hacia la meta
+        Planner-->>Agent: Devuelve acción en O(1) (0 llamadas a A*)
+    else Bloqueado por obstáculo
+        Planner-->>Agent: Ejecuta A* sobre FREE conocidos -> guarda currentPlan -> devuelve 1ª acción
     end
+    Agent->>Agent: 3. Doble barrera de seguridad: bumpers.isSafe(action)?
+    Agent->>Client: 4. sendGridAction(runId, action) [con delay 500ms]
+    Client->>Server: POST /api/v1/runs/{id}/actions
+    Server-->>Client: RunControl actualizado (ACTIVE / SUCCEEDED / FAILED)
+    Agent->>Client: 5. FASE SEE: refreshGridState(state)
+    Client->>Server: GET position, bumpers y energy (target NO se relee)
+    Server-->>Client: Percepciones para el siguiente turno
 ```
 
 ---
 
-## 4. Desglose Detallado de Clases de Navegación 2D
+## 5. Detalles Clave de las Demás Clases
 
-### 4.1. `model/grid/GridPosition.java`
-- **Rol**: Modela una coordenada inmutable $(x, y)$.
-- **Reglas de Coordenadas de DBA Lab**:
-  - $(0, 0)$ arriba a la izquierda.
-  - Eje $X$ (columnas): crece hacia la derecha (Este, $\Delta x = +1$) y decrece hacia la izquierda (Oeste, $\Delta x = -1$).
-  - Eje $Y$ (filas): crece hacia abajo (Sur, $\Delta y = +1$) y decrece hacia arriba (Norte, $\Delta y = -1$).
-- **Por qué `equals()` y `hashCode()` son obligatorios**:
-  - `GridPosition` actúa como clave en `Map<GridPosition, CellType>`, `Map<GridPosition, Integer>` y en los conjuntos `closedSet` y `bestG` del algoritmo $A^*$. Si no se sobreescriben basándose en `x` e `y`, Java compararía la referencia de memoria del objeto, impidiendo reconocer que dos instancias distintas representan la misma casilla $(4, 5)$.
-- **Métodos principales**:
-  - `neighbor(GridAction action)`: calcula la casilla resultante tras aplicar una acción.
-  - `manhattanDistance(GridPosition other)`: calcula $|x_1 - x_2| + |y_1 - y_2|$.
-  - `actionTowards(GridPosition neighbor)`: deduce la acción cardinal entre casillas contiguas.
+### `MentalMap.java` (Memoria Espacial)
+* **¿Por qué usa `HashMap` y no `char[10][10]`?** Porque en la Fase 2 los mapas tienen tamaños desconocidos y mucho mayores. Un `HashMap<GridPosition, CellType>` crece dinámicamente y admite cualquier coordenada sin límite fijo ni desbordamientos.
+* **Métodos clave:**
+  * `updateFromPerceptions(pos, bumpers)`: marca `pos` como `FREE`, suma 1 a su `visitCounts` y clasifica los 4 vecinos cardinales como `FREE` u `OBSTACLE`.
+  * `isKnownFree(pos)`: devuelve `true` solo si la celda ya es conocida y es `FREE` (base de nuestro $A^*$ sobre lo conocido).
+  * `isFrontier(pos)`: devuelve `true` si es `FREE`, tiene `visitCount == 0` y al menos uno de sus 4 vecinos es `UNKNOWN`.
+  * `countUnknownNeighbors(pos)`: cuenta cuántos vecinos `?` descubriríamos al pisar `pos`.
 
-### 4.2. `model/grid/GridAction.java`
-- Enum seguro con las 4 acciones cardinales:
-  - `MOVE_NORTH("grid.move.north", 0, -1)`
-  - `MOVE_EAST("grid.move.east", 1, 0)`
-  - `MOVE_SOUTH("grid.move.south", 0, 1)`
-  - `MOVE_WEST("grid.move.west", -1, 0)`
-- Método `opposite()`: devuelve la dirección opuesta (`NORTH <-> SOUTH`, `EAST <-> WEST`), fundamental para retrocesos o razonamiento simétrico.
+### `GridPosition.java` (Coordenadas y Distancia Manhattan)
+* Es **inmutable** (`final int x, y`) e implementa `equals()` y `hashCode()` para poder usarse como clave en `HashMap` y `HashSet`.
+* **Distancia Manhattan:** `Math.abs(this.x - other.x) + Math.abs(this.y - other.y)`. Es **admisible** (nunca sobrestima los pasos reales en una cuadrícula de 4 direcciones) y **consistente** (al moverse 1 casilla varía como máximo en $\pm 1$).
 
-### 4.3. `model/grid/GridBumpers.java`
-- Encapsula los 4 booleanos del sensor `grid.bumpers`: `north`, `east`, `south`, `west`.
-- `isBlocked(action)`: retorna `true` si hay un muro o límite en esa dirección. Moverse en esa dirección provocaría `FAILED` inmediato por colisión.
-- `isSafe(action)`: retorna `!isBlocked(action)`. Funciona como la barrera de seguridad reactiva del agente antes de autorizar cualquier movimiento.
+### `DbaClient.java` (Red, Protección Térmica e Idempotencia)
+* **Retardo térmico obligatorio (`DBA_REQUEST_DELAY_MS = 500`):** Espera al menos 500 ms entre peticiones HTTP para proteger la CPU del servidor universitario `orca.ugr.es`.
+* **Idempotencia en `sendGridAction()`:** `POST /actions` mueve al robot y gasta 1 de energía. Si ocurre un fallo de red o HTTP 503, **nunca reintenta el `POST` a ciegas** (duplicaría el movimiento). En su lugar, audita el estado con peticiones pasivas seguras: `GET /runs/{id}` y `GET /runs/{id}/actions/last`.
+* **Cierre limpio en `takeDown()`:** Si se aborta el agente con `Ctrl+C`, `takeDown()` llama a `client.closeRun(runId)` para no dejar el token del estudiante bloqueado durante 5 minutos.
 
-### 4.4. `model/grid/GridEnergy.java`
-- Encapsula el modo (`"FINITE"`) y las unidades disponibles (`remaining`) del sensor `grid.energy`.
-- Cada movimiento en el servidor consume 1 unidad.
-- `hasEnergy()`: valida si `remaining > 0` para ordenar una parada controlada antes de gastar la última unidad.
-
-### 4.5. `model/grid/GridState.java`
-- DTO que agrupa `currentPosition`, `targetPosition`, `bumpers`, `energy` y `RunControl`.
-- Actualiza automáticamente el estado de control tras cada lectura de sensor o acción física.
-- `isAtTarget()`: determina si el agente ha llegado exactamente a la meta.
-
-### 4.6. `grid/navigation/CellType.java` y `MentalMap.java`
-- `CellType`: `FREE` (transitable comprobada), `OBSTACLE` (muro o borde) y `UNKNOWN` (niebla de guerra).
-- **Diseño con `HashMap` frente a matriz `char[10][10]`**:
-  > [!IMPORTANT]
-  > En la Tanda 1 los mapas son de 10×10, pero en la **Tanda 2 los mundos tendrán tamaños y formas desconocidos a priori**. Usar un array fijo `char[10][10]` provocaría desbordamientos de índice (`ArrayIndexOutOfBoundsException`) ante mapas mayores o si el agente se asoma a coordenadas de borde como $x = -1$ o $x = 10$. El `HashMap` permite registrar coordenadas arbitrarias de forma elástica sin desperdiciar memoria.
-- **Actualización inteligente (`updateFromPerceptions`)**:
-  - Marca la casilla actual como `FREE` e incrementa su contador en `visitCounts`.
-  - Proyecta los bumpers a las 4 direcciones adyacentes: si el bumper es `true` marca `OBSTACLE`; si es `false` marca `FREE` (¡descubrimiento a distancia sin pisar la casilla!).
-- **Render ASCII (`renderAscii`)**:
-  - Imprime la cuadrícula con numeración y simbología clara: `@` (agente), `$` (meta), `★` (éxito en meta), `#` (muros detectados), `+` (casillas ya pisadas), `.` (vistas libres) y `?` (niebla desconocida).
+### `GridVisualizerGui.java` (Interfaz Gráfica Visual)
+* Permite demostrar en vivo cómo el agente descubre la niebla de guerra, marca fronteras (puntos celestes), cuenta visitas, guarda su cola `currentPlan` (línea magenta discontinua) y muestra en el panel derecho exactamente **cuándo usa Avance Directo $O(1)$**, **cuándo usa la Cola $O(1)$** y **cuándo despierta a $A^*$**.
 
 ---
 
-## 5. El Cerebro Algorítmico: Optimistic Online $A^*$ (`PathPlanner.java`)
+## 6. Resultados de Pruebas Offline (`./run.sh test-unit`)
 
-### 5.1. ¿Por qué "Online" y por qué "Optimista"?
-1. **Online**: El mapa es inicialmente desconocido. El agente debe planificar con la información que tiene, ejecutar un paso en el entorno real, percibir los nuevos obstáculos locales y volver a planificar.
-2. **Optimista (*Assumption of Free Space*)**: Toda celda desconocida (`UNKNOWN`) se presume transitable a coste 1. Solo lo confirmado como `OBSTACLE` se considera intransitable. Si el agente fuera pesimista, creería que está rodeado de muros y se negaría a avanzar.
+Los **16 tests unitarios** (4 de `GridPositionTest`, 9 de `PathPlannerTest` y 3 de `DbaClientDelayTest`) pasan al 100% en ~2 segundos sin internet:
 
-### 5.2. Formulación Matemática de la Evaluación de Nodos
-$$f(n) = g(n) + h(n)$$
-- $g(n)$: coste real acumulado desde la posición actual del agente (1 unidad por movimiento hipotético).
-- $h(n)$: distancia Manhattan hasta la meta $(x_{meta}, y_{meta})$:
-  $$h(n) = |x_n - x_{meta}| + |y_n - y_{meta}|$$
-
-#### Demostración Formal de Admisibilidad y Consistencia
-- **Admisibilidad ($h(n) \le h^*(n)$)**: En una cuadrícula con movimientos exclusivamente ortogonales, Manhattan representa el camino más corto en línea recta sin muros. Cualquier obstáculo solo puede mantener o incrementar la distancia real ($h^*(n) \ge h(n)$). Al no sobrestimar nunca el coste real, $A^*$ garantiza encontrar la trayectoria óptima bajo el conocimiento disponible.
-- **Consistencia (Desigualdad Triangular)**: Para dos celdas vecinas $n$ y $n'$ con coste de arista $c(n, n') = 1$, la distancia Manhattan varía como máximo en $\pm 1$:
-  $$h(n) \le 1 + h(n')$$
-  Al ser consistente, no es necesario reabrir nodos ya explorados en el conjunto cerrado (`closedSet`).
-
-### 5.3. Desempate Cuádruple en la Cola de Prioridad (`SearchNode.compareTo`)
-Para evitar oscilaciones o bucles infinitos en zonas abiertas con idéntico coste $f(n)$:
-```java
-@Override
-public int compareTo(SearchNode other) {
-    // 1. Menor coste total f(n) = g(n) + h(n)
-    int cmp = Integer.compare(this.f, other.f);
-    if (cmp != 0) return cmp;
-
-    // 2. Desempate: menor heurística h(n) (priorizar acercarse a la meta)
-    cmp = Integer.compare(this.h, other.h);
-    if (cmp != 0) return cmp;
-
-    // 3. Desempate: menor visitCount en MentalMap (evita re-visitar celdas ya pisadas)
-    cmp = Integer.compare(this.visits, other.visits);
-    if (cmp != 0) return cmp;
-
-    // 4. Desempate: preferir celdas confirmadas FREE frente a UNKNOWN a igualdad total
-    return Boolean.compare(other.confirmedFree, this.confirmedFree);
-}
-```
-
-### 5.4. Cómo Resuelve las Trampas Cóncavas (U, C y Arco)
-
-#### Fracaso de un Algoritmo Voraz (*Greedy Best-First Search*)
-Un agente voraz solo evalúa la distancia a la meta en sus 4 vecinos inmediatos. Al entrar en una barrera en **U** cuya apertura mira al Norte y la meta está al Sur:
-1. Entra por la apertura y avanza hacia el fondo porque cada paso al Sur reduce la distancia Manhattan.
-2. Al llegar al muro del fondo, para escapar debe retroceder al Norte, pero eso **aumenta** la distancia Manhattan.
-3. El agente voraz se niega a retroceder, oscila indefinidamente contra el muro y agota la energía.
-
-#### Éxito de Optimistic Online $A^*$
-1. Cuando el agente llega a la celda $(4, 4)$ en el fondo de la U, su sensor `bumpers.south` detecta el muro y `MentalMap` marca $(4, 5)$ como `OBSTACLE`.
-2. En el turno siguiente, $A^*$ replanifica la ruta completa desde $(4, 4)$ hasta la meta.
-3. Al estar el Sur bloqueado por celdas `OBSTACLE`, el camino continuo más corto en el grafo es:
-   - Retroceder al Norte: $(4, 4) \rightarrow (4, 3) \rightarrow (4, 2) \rightarrow (4, 1) \rightarrow (4, 0)$.
-   - Bordear el obstáculo por el exterior hacia el Este: $(4, 0) \rightarrow (7, 0) \rightarrow (7, 7) \rightarrow (4, 7)$.
-4. La primera acción planificada es `MOVE_NORTH`. El agente retrocede sin titubeos, sale de la U y rodea el muro limpiamente.
+| Escenario Evaluado | Pasos (Batería) | Llamadas a $A^*$ | Nodos Expandidos | Resultado |
+| :--- | :---: | :---: | :---: | :---: |
+| **1. Campo abierto (10x10)** | **18 pasos** (óptimo) | **0 llamadas** | **0 nodos** | ✅ Superado |
+| **2. Muro vertical (10x10)** | **17 pasos** (óptimo) | 5 llamadas | 15 nodos | ✅ Superado |
+| **3. Muro horizontal (10x10)** | **15 pasos** | 4 llamadas | 10 nodos | ✅ Superado |
+| **4. Muro diagonal (10x10)** | **16 pasos** (óptimo) | **1 llamada** | **1 nodo** | ✅ Superado |
+| **5. Barrera en U (10x10)** | **35 pasos** | 10 llamadas | 77 nodos | ✅ Superado |
+| **6. Barrera en C (10x10)** | **21 pasos** | 7 llamadas | 42 nodos | ✅ Superado |
+| **7. Barrera en arco (10x10)** | **29 pasos** | 12 llamadas | 75 nodos | ✅ Superado |
+| **8. Meta encerrada** | 79 pasos (parada segura) | — | Solo celdas `FREE` | ✅ Parada controlada |
+| **9. Mapa Masivo (100x100)** | **185 pasos** | **46 llamadas** | **1.081 nodos (~2 ms)** | ✅ Superado |
 
 ---
 
-## 6. El Agente JADE y Seguridad (`grid/GridAgent.java`)
+## 7. Banco de Preguntas y Respuestas para la Defensa
 
-### 6.1. Ciclo de Vida del Agente
-- **`setup()`**:
-  1. Conecta con `DbaClient`.
-  2. Resuelve el reto dinámicamente con `resolveChallenge()` (acepta selector numérico 1..7 o nombre).
-  3. Inicia el run con `startRunTyped(challengeId)` y lee las 4 percepciones iniciales con `initGridState(runId)`.
-  4. Instancia `MentalMap` y `PathPlanner`.
-  5. Añade el comportamiento: `addBehaviour(new NavegacionBehaviour())`.
-- **`NavegacionBehaviour` (`action()` y `done()`)**:
-  - Cada invocación de `action()` ejecuta **un único paso** respetando la concurrencia cooperativa de JADE (sin monopolizar el hilo del agente).
-  - Consulta `done()` tras cada paso: cuando el run termina (`SUCCEEDED`, `FAILED`) o se agota la energía, finaliza el comportamiento.
-- **`takeDown()`**:
-  - Si el run quedó en estado `ACTIVE` tras una detención forzada (`Ctrl+C`), llama inmediatamente a `client.closeRun(runId)` para **evitar dejar bloqueado el token del estudiante** en DBA Lab.
-  - Si se ejecuta como contenedor secundario o sin ventana, destruye su propio contenedor con `getContainerController().kill()` y cierra su JVM limpiamente.
+### Preguntas sobre el Algoritmo y la Mejora para Mapas Masivos
 
-### 6.2. Doble Barrera de Seguridad Reactiva: `selectValidatedSafeAction()`
-Antes de enviar cualquier petición HTTP al servidor, el método `selectValidatedSafeAction()` comprueba si la acción propuesta por $A^*$ cumple `state.getBumpers().isSafe(candidate)`:
-- Si el bumper físico indica bloqueo, cancela la acción de inmediato, marca la celda como `OBSTACLE` en el `MentalMap` y vuelve a planificar en memoria.
-- **Coste**: 0 peticiones de red y 0 unidades de energía consumidas. Cero colisiones garantizadas.
+#### P1: ¿Por qué no llamáis a $A^*$ en cada paso? ¿Cuándo se ejecuta exactamente?
+> **Respuesta:** Llamar a $A^*$ en cada turno es innecesario y costoso en mapas grandes. Nuestro `PathPlanner` solo invoca a $A^*$ cuando se dan **dos condiciones a la vez**: (1) no tenemos pasos pendientes en la cola `currentPlan` y (2) ningún vecino libre adyacente nos acerca directamente a la meta. Mientras el camino hacia la meta está despejado, el agente avanza en $O(1)$ sin llamar a $A^*$; por ejemplo, en *Campo abierto* hace **0 llamadas a $A^*$**, y en *Muro diagonal* solo hace **1 llamada**.
 
----
+#### P2: ¿Por qué el avance directo sin $A^*$ no empeora la solución?
+> **Respuesta:** Por la consistencia de la heurística Manhattan. Si estamos a distancia $h$ de la meta y una casilla vecina libre y no visitada está a distancia $h - 1$, su coste estimado en $A^*$ es $f = g + h = 1 + (h - 1) = h$, que es la cota inferior matemática imposible de mejorar. Por tanto, es un atajo exacto en $O(1)$ que produce la misma decisión que $A^*$.
 
-## 7. Capa de Red e Idempotencia (`api/DbaClient.java`)
+#### P3: ¿Cómo funciona vuestro $A^*$ "en base a lo conocido" y por qué sirve para mapas masivos?
+> **Respuesta:** En vez de expandir miles de casillas desconocidas (`UNKNOWN`) intentando llegar a una meta que puede estar a cientos de casillas en un mapa masivo, nuestro $A^*$ **solo expande celdas confirmadas como `FREE` en el `MentalMap`**. Su objetivo dentro del mapa conocido es llegar a la mejor **celda frontera** (una celda `FREE` vista por los bumpers, aún no pisada y colindante con `?`) minimizando $f(n) = g(n) + h(n)$. Así, el coste de cálculo solo depende de lo que el agente ha explorado y no del tamaño total del mundo.
 
-### 7.1. Validación Estricta de Capacidades (`validateGridCapabilities`)
-Antes de iniciar ningún run, el cliente analiza el JSON devuelto por `GET /api/v1/challenges`:
-- Valida la presencia de los 4 sensores: `grid.position`, `grid.target`, `grid.bumpers`, `grid.energy`.
-- Valida la presencia de las 4 acciones: `grid.move.north`, `grid.move.east`, `grid.move.south`, `grid.move.west`.
-- Si falta alguno, lanza `DbaException(422, "MISSING_CAPABILITY")` impidiendo arrancar retos incompatibles.
+#### P4: ¿Cómo evitáis volver a ejecutar $A^*$ mientras el agente sale de un callejón o barrera en U?
+> **Respuesta:** Cuando $A^*$ encuentra el camino por el mapa conocido desde el fondo de la trampa hasta la mejor frontera exterior (por ejemplo, 8 pasos), guarda toda la secuencia en la cola `currentPlan`. Como todas las casillas intermedias ya estaban visitadas y confirmadas como `FREE`, en los turnos siguientes el agente simplemente consume `currentPlan.poll()` en $O(1)$ sin volver a llamar a $A^*$ hasta llegar a la frontera.
 
-### 7.2. Protocolo de Idempotencia en `sendGridAction()`
-> [!WARNING]
-> La petición `POST /api/v1/runs/{id}/actions` **NO es idempotente**: cada llamada ejecutada con éxito consume 1 unidad de energía y avanza el reloj de la simulación.
+#### P5: ¿Cómo sabéis dónde está la meta si el mapa es desconocido?
+> **Respuesta:** El servidor DBA Lab ofrece el sensor `grid.target`, que consultamos una única vez al arrancar en `DbaClient.initGridState()`. Conocemos sus coordenadas $(x, y)$ para poder calcular la distancia Manhattan $h(n)$, pero no conocemos los obstáculos que hay entre medias; esos los descubrimos con `grid.bumpers`.
 
-Si se produce un error `HTTP 503 Service Unavailable` o un corte de red durante la respuesta:
-- **Peligro**: Si se reintenta el `POST` a ciegas y la primera petición sí llegó al servidor, el agente se moverá dos veces, gastando doble energía o chocando.
-- **Solución implementada (`recoverControlAfterUncertainAction`)**:
-  1. No reintenta el `POST`.
-  2. Consulta la operación segura de lectura `GET /api/v1/runs/{id}` (`getRunStatus`).
-  3. Consulta `GET /api/v1/runs/{id}/actions/last` (`getLastAction`).
-  4. Sincroniza el estado del agente con el estado real registrado en el servidor sin riesgo alguno.
+#### P6: ¿Por qué desempatáis en $A^*$ por menor $g(n)$ (frontera más cercana al agente) en vez de menor $h(n)$?
+> **Respuesta:** Porque en exploración online, al rodear un muro largo, la frontera que tienes justo delante ($g=1$) y la frontera que dejaste atrás en el otro extremo del muro ($g=5$) suelen empatar en el mismo $f = g + h$. Si desempatáramos por menor $h$, el agente daría media vuelta constantemente haciendo un efecto péndulo entre ambos extremos. Al desempatar por menor $g$, el agente sigue rodeando el muro en la dirección actual sin retrocesos innecesarios.
+
+#### P7: ¿Cómo detecta el agente que una meta está encerrada (inalcanzable)?
+> **Respuesta:** Cuando el agente ha visitado todas las casillas alcanzables de su zona, ya no queda ninguna casilla `FREE` con `visitCount == 0` junto a terreno `UNKNOWN` (no quedan fronteras). La cola `openSet` de $A^*$ se vacía sin encontrar ni la meta ni ninguna frontera, `findPath` devuelve lista vacía y `GridAgent` realiza una parada controlada limpia sin chocar ni gastar el resto de batería.
 
 ---
 
-## 8. Resultados de la Batería de Pruebas Offline (`test/grid/PathPlannerTest.java`)
+### Preguntas sobre JADE, Arquitectura y API REST
 
-Los 12 tests unitarios offline se ejecutan en local sin necesidad de conexión a Internet:
+#### P8: ¿Por qué usáis un `Behaviour` en `GridAgent` en lugar de un bucle `while` en `setup()`?
+> **Respuesta:** En JADE cada agente tiene un único hilo cooperativo. Un bucle `while` en `setup()` bloquearía el hilo e impediría que JADE gestione el ciclo de vida del agente o sus mensajes. Con `NavegacionBehaviour`, cada `action()` ejecuta un único paso y `done()` indica cuándo terminar limpiamente.
+
+#### P9: ¿Cómo garantizáis que el agente nunca choca contra un muro?
+> **Respuesta:** Doble barrera de seguridad: primero, `PathPlanner` solo propone movimientos hacia celdas confirmadas como `FREE` en `MentalMap`; segundo, antes de enviar el HTTP, `selectValidatedSafeAction()` verifica físicamente `state.getBumpers().isSafe(candidate)`. Si fallase, marca el obstáculo, limpia `currentPlan` y replanifica en memoria con 0 coste de energía.
+
+#### P10: ¿Qué hace `DbaClient` si falla la red o recibe un HTTP 503 al enviar un movimiento?
+> **Respuesta:** Nunca reintenta el `POST /actions` a ciegas porque no es idempotente (podría mover al robot dos veces). En su lugar consulta los endpoints pasivos `GET /runs/{id}` y `GET /runs/{id}/actions/last` para comprobar si el servidor llegó a aplicar la acción y resincronizar el estado.
+
+#### P11: ¿Por qué cerramos el run en `takeDown()` y por qué hay un retardo de 500 ms?
+> **Respuesta:** DBA Lab solo permite un run activo simultáneo por token; cerrar el run en `takeDown()` evita que el alumno quede bloqueado 5 minutos si pulsa `Ctrl+C`. El retardo de 500 ms (`DBA_REQUEST_DELAY_MS`) protege la CPU del servidor `orca.ugr.es` frente a ráfagas de peticiones.
+
+---
+
+## 8. Chuleta de Comandos para la Defensa
+
 ```bash
+cd ~/NetBeansProjects/agentesp2
+
+# 1. Abrir la interfaz gráfica interactiva (sin internet, 10 mapas disponibles)
+./run.sh gui        # O directamente un mapa: ./run.sh gui 5
+
+# 2. Ejecutar los 16 tests unitarios offline (incluye mapa masivo 100x100)
 ./run.sh test-unit
-```
 
-| Escenario Evaluado | Inicio $\rightarrow$ Meta | Pasos Reales | Límite Batería | Colisiones | Resultado |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **1. Campo abierto** | $(0, 0) \rightarrow (9, 9)$ | **18 pasos** | 50 | 0 | **SUPERADO** (Óptimo Manhattan exacto) |
-| **2. Muro vertical** | $(1, 5) \rightarrow (8, 5)$ | **17 pasos** | 60 | 0 | **SUPERADO** (Rodea el muro) |
-| **3. Muro horizontal** | $(5, 1) \rightarrow (5, 8)$ | **19 pasos** | 60 | 0 | **SUPERADO** (Rodea el muro) |
-| **4. Muro diagonal** | $(1, 1) \rightarrow (8, 8)$ | **16 pasos** | 80 | 0 | **SUPERADO** (Supera la escalera sin trabarse) |
-| **5. Barrera en U** | $(4, 1) \rightarrow (4, 8)$ | **29 pasos** | 100 | 0 | **SUPERADO** (Entra, detecta, retrocede y rodea) |
-| **6. Barrera en C** | $(1, 5) \rightarrow (8, 5)$ | **27 pasos** | 100 | 0 | **SUPERADO** (Escapa de la concavidad lateral) |
-| **7. Barrera en arco** | $(4, 1) \rightarrow (4, 8)$ | **25 pasos** | 100 | 0 | **SUPERADO** (Sortea el arco convexo/cóncavo) |
-| **8. Meta Encerrada** | $(1, 1) \rightarrow (5, 5)$ | 67 pasos | 200 | 0 | **PARADA CONTROLADA** (Detecta que no hay ruta sin chocar) |
-
----
-
-## 9. Banco Maestro de Preguntas y Respuestas para la Defensa
-
-### Bloque A: Arquitectura y Reutilización de Código
-
-#### P1: ¿Qué partes del código habéis reutilizado del Bloque 1 (Termostato) y por qué no habéis tenido que volver a programar la comunicación HTTP ni los estados del run?
-> **Respuesta:** Gracias a la separación por capas implementada en el Bloque 1, toda la capa `api/` (`DbaClient`, `DbaException`) y los modelos `RunStatus` y `RunControl` son completamente agnósticos del tipo de problema. Toda la lógica de conexión con `HttpClient`, autenticación con token Bearer, captura de desconexiones en `ShutdownHook`, fichero `.active_run_id` y parsing JSON es transversal. Para Grid 2D solo hemos tenido que modelar las percepciones geométricas en `model/grid/`, el cerebro de búsqueda en `grid/navigation/` y el agente `GridAgent`, reutilizando el 100% de la infraestructura de red.
-
-#### P2: ¿Por qué no habéis eliminado las clases del Termostato (`TermostatoAgent`, `ThermostatState`, etc.)?
-> **Respuesta:** Para mantener la integridad de la práctica completa en un único repositorio unificado. El proyecto cuenta con un punto de entrada polivalente en `Main.java` y un script `run.sh` que permite compilar y ejecutar tanto los retos de control térmico (`./run.sh termostato`) como los de navegación (`./run.sh grid 1`), manteniendo el código desacoplado y modular.
-
----
-
-### Bloque B: Algoritmia e Inteligencia Artificial
-
-#### P3: ¿Por qué habéis utilizado el algoritmo $A^*$ en lugar de Dijkstra o Búsqueda en Anchura (BFS)?
-> **Respuesta:** Dijkstra y BFS exploran el mapa de forma radial uniforme en todas direcciones, expandiendo decenas de nodos innecesarios. $A^*$ incorpora la función heurística $h(n)$ (distancia Manhattan) que orienta la búsqueda directamente hacia la meta, reduciendo radicalmente los nodos explorados y permitiendo calcular la siguiente acción en pocos milisegundos.
-
-#### P4: ¿Por qué la distancia Manhattan es adecuada aquí? ¿Es admisible y consistente?
-> **Respuesta:** En una cuadrícula donde el agente solo puede realizar movimientos ortogonales con coste 1, la distancia Manhattan $|x_1 - x_2| + |y_1 - y_2|$ es la distancia teórica mínima sin obstáculos. Dado que la presencia de muros solo puede igualar o incrementar la distancia real ($h^*(n) \ge h(n)$), jamás sobrestima el coste real, siendo **admisible**. Además, al moverse a una celda vecina la distancia varía como máximo en 1 por paso, cumpliendo la desigualdad triangular $h(n) \le 1 + h(n')$, lo que asegura que es **consistente** y evita tener que reabrir nodos de `closedSet`.
-
-#### P5: ¿Por qué el algoritmo es "Optimista"? ¿Qué sucedería si fuera "Pesimista"?
-> **Respuesta:** Se basa en el principio de *Assumption of Free Space*: el agente asume que toda celda no percibida (`UNKNOWN`) es transitable hasta que un sensor físico demuestre lo contrario. Si fuera pesimista y asumiera que lo desconocido son muros, el agente consideraría desde el primer instante que está encerrado y que no existe ruta posible, negándose a moverse.
-
-#### P6: ¿Por qué un algoritmo voraz (*Greedy Best-First*) falla en las barreras en U o C y vuestro $A^*$ no?
-> **Respuesta:** Un algoritmo voraz solo evalúa la distancia a la meta en los vecinos inmediatos; al entrar en la U, cada paso hacia el fondo reduce la distancia a la meta, pero al toparse con el fondo se queda atrapado porque para salir necesita dar pasos que aumentan temporalmente la distancia Manhattan. Nuestro agente, al detectar los muros con los bumpers, los registra como `OBSTACLE` en su `MentalMap`. En la siguiente iteración, $A^*$ planifica el camino completo considerando el coste acumulado $g(n)$; como el fondo está bloqueado, el camino de menor coste total $f = g + h$ es salir de la U y rodearla por fuera.
-
-#### P7: ¿Cómo evitáis que el agente caiga en bucles infinitos de oscilación entre casillas libres?
-> **Respuesta:** Mediante tres mecanismos complementarios:
-> 1. En `MentalMap` llevamos un contador `visitCounts` de cuántas veces hemos pisado cada casilla.
-> 2. En `SearchNode.compareTo`, a igualdad de coste $f(n)$ y de heurística $h(n)$, priorizamos los nodos con menor `visitCount`, penalizando el retroceso a zonas ya visitadas.
-> 3. La función de coste acumulado $g(n)$ crece con cada paso virtual, haciendo que los caminos con ciclos tengan un coste $f(n)$ estrictamente mayor y sean descartados por la cola de prioridad.
-
----
-
-### Bloque C: Agentes y Plataforma JADE
-
-#### P8: ¿Por qué se utiliza un `Behaviour` en lugar de un bucle `while(true)` dentro de `setup()`?
-> **Respuesta:** JADE asigna un único hilo de ejecución a cada agente. Si introdujéramos un bucle infinito en `setup()`, monopolizaríamos ese hilo, impidiendo que el agente procese el ciclo de vida de la plataforma, atienda mensajes o ejecute otros comportamientos. Los `Behaviour` permiten la concurrencia cooperativa gestionada por el planificador interno de JADE.
-
-#### P9: ¿Qué papel juegan `action()` y `done()` en `NavegacionBehaviour`?
-> **Respuesta:** `action()` ejecuta una única iteración del ciclo (percibir, actualizar mapa, planificar y enviar un paso). JADE consulta `done()` tras cada llamada a `action()`: mientras devuelva `false`, el planificador seguirá programando el behaviour; en cuanto el agente alcanza la meta o el run pasa a estado terminal, `done()` devuelve `true` y el comportamiento se retira limpiamente de la cola.
-
-#### P10: ¿Cómo se comunica el agente con la plataforma gráfica RMA sin lanzar múltiples ventanas?
-> **Respuesta:** Hemos diseñado `Main.java` con soporte de contenedores distribuidos:
-> - `./run.sh server` arranca el `Main-Container` persistente en el puerto 1099 con la GUI (RMA).
-> - Al lanzar `./run.sh grid 1`, el script detecta mediante un socket TCP si el puerto 1099 está ocupado y arranca el agente como un contenedor secundario ligero (`-container -host localhost -port 1099`). Al terminar el reto, el agente destruye su contenedor secundario con `kill()`, dejando la plataforma RMA intacta.
-
----
-
-### Bloque D: Protocolo y API REST de DBA Lab
-
-#### P11: ¿Por qué no consultamos el sensor `grid.target` en cada turno igual que hacemos con `grid.position` y `grid.bumpers`?
-> **Respuesta:** Porque la meta es estacionaria durante todo el reto. Consultarla en cada paso supondría una petición HTTP redundante que ralentizaría la ejecución del agente sin aportar información nueva. Por el contrario, la posición, los bumpers y la energía cambian con cada movimiento y deben refrescarse obligatoriamente.
-
-#### P12: ¿Consultar percepciones evita que caduque el run por inactividad a los 5 minutos?
-> **Respuesta:** No. En la especificación oficial de DBA Lab, las consultas de lectura (`GET /perceptions`) no reinician el temporizador de inactividad de 5 minutos ni avanzan el reloj de la simulación. La simulación solo avanza y el temporizador solo se renueva cuando se aplica una acción física válida (`POST /actions`).
-
-#### P13: ¿Qué hacéis si la llamada a `POST /actions` devuelve un error 503 o se corta la red?
-> **Respuesta:** Aplicamos una estricta política de idempotencia. Nunca reintentamos el `POST` a ciegas, porque si la acción original ya había sido aplicada por el servidor, un segundo `POST` movería al agente dos veces, consumiendo doble energía o provocando un choque. En su lugar, invocamos `GET /runs/{id}` y `GET /runs/{id}/actions/last` para auditar el estado real del servidor y resincronizar el agente.
-
-#### P14: ¿Por qué en `takeDown()` cerramos el run si sigue activo?
-> **Respuesta:** Para evitar el bloqueo de concurrencia de DBA Lab. La API del laboratorio solo permite un run activo simultáneo por estudiante. Si un alumno detiene su agente con `Ctrl+C` sin cerrar el run, su token quedaría bloqueado durante 5 minutos hasta que el servidor lo expire por inactividad. Al capturar `takeDown()`, nos aseguramos de liberar el token de inmediato.
-
----
-
-### Bloque E: Decisiones de Diseño e Ingeniería de Software
-
-#### P15: ¿Por qué habéis modelado las coordenadas con una clase inmutable `GridPosition`?
-> **Respuesta:** Porque en algoritmos de búsqueda basados en grafos y árboles como $A^*$, las posiciones se comparten entre múltiples nodos de búsqueda y estructuras como `openSet` y `closedSet`. Si `GridPosition` fuera mutable, modificar una coordenada en un nodo alteraría involuntariamente el estado de los nodos padres o corrompería las claves dentro del `HashMap` de `MentalMap`.
-
-#### P16: ¿Por qué no habéis asumido un mapa de 10×10 en el código?
-> **Respuesta:** Para cumplir con el principio de generalización para la Tanda 2. En la Tanda 2 los mundos tendrán dimensiones arbitrarias no reveladas de antemano. `MentalMap` utiliza una representación dispersa en memoria (`HashMap<GridPosition, CellType>`) que crece dinámicamente y puede registrar cualquier coordenada, incluso valores negativos o superiores a 10 si el agente fuera situado cerca de un borde.
-
-#### P17: ¿Cómo garantizáis al 100% que el agente nunca se estrelle contra un muro?
-> **Respuesta:** Mediante una arquitectura de **doble barrera de seguridad**:
-> 1. *Barrera de Planificación*: `PathPlanner` solo considera transitables celdas que no estén marcadas como `OBSTACLE`.
-> 2. *Barrera Reactiva Física*: Antes de emitir cualquier petición HTTP al servidor, el método `selectValidatedSafeAction()` consulta `bumpers.isSafe(candidate)`. Si el sensor físico indica que hay un obstáculo en esa dirección (por ejemplo, una celda que el planificador asumió libre por optimismo), la acción es cancelada de inmediato, la celda se marca como `OBSTACLE` y se replanifica en memoria sin enviar nada al servidor.
-
----
-
-## 10. Chuleta de Comandos Rápidos para la Defensa
-
-### 1. Demostración Offline Inmediata (¡Ideal para empezar!)
-```bash
-cd Termostato/Codigo/agentesp2
-./run.sh test-unit
-```
-> *Ejecuta los 12 tests en ~1 segundo, demostrando que el agente supera los 7 mapas sin chocar y se detiene ante metas inalcanzables.*
-
-### 2. Comprobar Conexión con DBA Lab (Sin consumir runs)
-```bash
+# 3. Comprobar conexión con DBA Lab sin gastar runs
 ./run.sh test
-```
-> *Lista los retos activos en DBA Lab con sus capacidades.*
 
-### 3. Ejecutar los Retos de Navegación Grid 2D en DBA Lab
-```bash
-# Reto 1: Campo abierto
-./run.sh grid 1
-
-# Reto 2: Muro vertical
-./run.sh grid 2
-
-# Reto 5: Barrera en U (¡El más recomendable para enseñar al profesor!)
-./run.sh grid 5
-
-# Selección por nombre
-./run.sh grid "Barrera en U"
-```
-
-### 4. Modo Servidor Gráfico JADE (Opcional)
-```bash
-# Terminal 1: Servidor central persistente con RMA
+# 4. Ejecutar contra DBA Lab (Terminal 1: servidor JADE | Terminal 2: reto Grid)
 ./run.sh server
-
-# Terminal 2: Lanzamiento del agente sobre el contenedor principal
 ./run.sh grid 5
 ```
