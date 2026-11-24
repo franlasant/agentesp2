@@ -110,9 +110,9 @@ flowchart TD
 * Comprueba si alguna cumple 3 condiciones:
   1. Está confirmada como libre (`isKnownFree`).
   2. Es la meta o es una casilla frontera nueva (`isFrontier`, nunca pisada y junto a terreno desconocido).
-  3. **Reduce la distancia Manhattan a la meta** ($h_{\text{vecino}} = h_{\text{actual}} - 1$).
+  3. **Reduce la distancia estimada a la meta** ($h_{\text{vecino}} = h_{\text{actual}} - 1$).
 * **¿Por qué esto es matemáticamente equivalente a $A^*$?**  
-  Porque la distancia Manhattan es la cota mínima posible: si damos 1 paso ($g=1$) que reduce la distancia en 1 ($h = h_{\text{actual}} - 1$), el coste total es $f = g + h = 1 + (h_{\text{actual}} - 1) = h_{\text{actual}}$. Ningún otro camino del mapa puede mejorar ese valor. Por tanto, **avanzar directamente en $O(1)$ elige exactamente la misma casilla que elegiría $A^*$**, pero haciendo **0 llamadas a $A^*$** en campo abierto y en todos los tramos rectos despejados.
+  Porque $h$ es consistente y es la cota mínima posible: si damos 1 paso ($g=1$) que reduce la distancia en 1 ($h = h_{\text{actual}} - 1$), el coste total es $f = g + h = 1 + (h_{\text{actual}} - 1) = h_{\text{actual}}$. Ningún otro camino del mapa puede mejorar ese valor. Por tanto, **avanzar directamente en $O(1)$ elige exactamente la misma casilla que elegiría $A^*$**, pero haciendo **0 llamadas a $A^*$** en campo abierto y en todos los tramos rectos despejados.
 
 ### Nivel 3: $A^*$ actuando exclusivamente sobre lo conocido (Exploración por Fronteras)
 * **¿Cuándo se llama a $A^*$?** Únicamente cuando la cola `currentPlan` está vacía **y** un obstáculo nos impide acercarnos directamente a la meta (es decir, ninguno de los 4 vecinos libres reduce $h$).
@@ -122,9 +122,16 @@ flowchart TD
   * La mejor **celda Frontera** (`MentalMap.isFrontier`): una celda que los bumpers ya confirmaron como `FREE`, que el agente aún no ha pisado (`visitCount == 0`) y que tiene al menos un vecino `UNKNOWN` (`?`) por descubrir (Tema 2, Diapositivas 88-89).
 * **Escalabilidad a mapas masivos:** Como $A^*$ nunca entra en la zona desconocida (`?`), da igual si el mapa mide $10 \times 10$ o $10.000 \times 10.000$: el grafo de búsqueda solo contiene las casillas que el robot ha descubierto hasta ese momento.
 
+### La heurística $h(n)$: distancia BFS rodeando los muros conocidos (`computeDistances`)
+* **Qué es:** $h(n)$ es el número mínimo de pasos de $n$ a la meta **rodeando los muros ya descubiertos** y suponiendo libre todo lo desconocido (`?`). Antes de decidir (cuando no hay plan en cola), `computeDistances` lanza un BFS desde la meta sobre todas las celdas que no son `OBSTACLE`, limitado al rectángulo de lo conocido más una casilla de margen.
+* **Por qué no Manhattan:** Manhattan ignora los muros. En el reto 11 (barrera triangular) el muro diagonal y el borde forman un embudo cuyo fondo está, en línea recta, muy cerca de la meta. Con Manhattan las fronteras del fondo parecían las mejores y el agente se quedaba sin energía explorándolas. Con BFS esas fronteras pasan a valer lo que cuesta de verdad salir del embudo y rodearlo.
+* **Sigue siendo admisible y consistente:** como lo desconocido se supone libre, el BFS nunca da más pasos que el camino real (admisible), y dos casillas vecinas difieren como mucho en 1 (consistente). Por eso el avance directo del Nivel 2 sigue siendo exacto. En campo abierto coincide con Manhattan.
+* **Fronteras inalcanzables:** si los muros conocidos aíslan una frontera de la meta, su $h$ vale `UNREACHABLE` y $A^*$ no la elige como destino.
+* **Coste:** el trabajo de búsqueda pasa del $A^*$ al BFS (proporcional al rectángulo conocido en cada decisión sin plan). Por eso los tests muestran casi 0 llamadas a $A^*$: el BFS ya ha hecho el trabajo.
+
 ### Criterios de prioridad de $A^*$ en `SearchNode.compareTo`
 Para elegir la mejor frontera sin oscilar entre los extremos de un muro:
-1. **Menor $f(n) = g(n) + h(n)$:** Minimiza los pasos por el mapa conocido hasta la frontera ($g$) más la distancia Manhattan desde esa frontera hasta la meta ($h$).
+1. **Menor $f(n) = g(n) + h(n)$:** Minimiza los pasos por el mapa conocido hasta la frontera ($g$) más la distancia BFS estimada desde esa frontera hasta la meta ($h$).
 2. **Menor $g(n)$ (frontera más cercana al agente):** A igualdad de $f(n)$ (típico entre los dos lados de un muro), prefiere la frontera que está más cerca de donde estamos ahora, evitando dar media vuelta y retroceder inútilmente.
 3. **Menor número de visitas (`visits`):** Prioriza fronteras vírgenes (`visits = 0`).
 4. **Mayor información esperada (`unknownNeighbors`):** Prefiere la frontera que descubre más casillas `?` nuevas (Diapositiva 89).
@@ -195,14 +202,31 @@ Los **16 tests unitarios** (4 de `GridPositionTest`, 9 de `PathPlannerTest` y 3 
 | Escenario Evaluado | Pasos (Batería) | Llamadas a $A^*$ | Nodos Expandidos | Resultado |
 | :--- | :---: | :---: | :---: | :---: |
 | **1. Campo abierto (10x10)** | **18 pasos** (óptimo) | **0 llamadas** | **0 nodos** | ✅ Superado |
-| **2. Muro vertical (10x10)** | **17 pasos** (óptimo) | 5 llamadas | 15 nodos | ✅ Superado |
-| **3. Muro horizontal (10x10)** | **15 pasos** | 4 llamadas | 10 nodos | ✅ Superado |
-| **4. Muro diagonal (10x10)** | **16 pasos** (óptimo) | **1 llamada** | **1 nodo** | ✅ Superado |
-| **5. Barrera en U (10x10)** | **35 pasos** | 10 llamadas | 77 nodos | ✅ Superado |
-| **6. Barrera en C (10x10)** | **21 pasos** | 7 llamadas | 42 nodos | ✅ Superado |
-| **7. Barrera en arco (10x10)** | **29 pasos** | 12 llamadas | 75 nodos | ✅ Superado |
-| **8. Meta encerrada** | 79 pasos (parada segura) | — | Solo celdas `FREE` | ✅ Parada controlada |
-| **9. Mapa Masivo (100x100)** | **185 pasos** | **46 llamadas** | **1.081 nodos (~2 ms)** | ✅ Superado |
+| **2. Muro vertical (10x10)** | **17 pasos** (óptimo) | 0 llamadas | 0 nodos | ✅ Superado |
+| **3. Muro horizontal (10x10)** | **15 pasos** | 0 llamadas | 0 nodos | ✅ Superado |
+| **4. Muro diagonal (10x10)** | **16 pasos** (óptimo) | 0 llamadas | 0 nodos | ✅ Superado |
+| **5. Barrera en U (10x10)** | **25 pasos** | 1 llamada | 3 nodos | ✅ Superado |
+| **6. Barrera en C (10x10)** | **25 pasos** | 1 llamada | 2 nodos | ✅ Superado |
+| **7. Barrera en arco (10x10)** | **21 pasos** | 1 llamada | 3 nodos | ✅ Superado |
+| **8. Meta encerrada** | 61 pasos (parada segura) | — | Solo celdas `FREE` | ✅ Parada controlada |
+| **9. Mapa Masivo (100x100)** | **185 pasos** | 0 llamadas | 0 nodos | ✅ Superado |
+
+Las llamadas a $A^*$ son casi 0 porque el BFS de la heurística ya conoce el rodeo y el avance directo lo sigue paso a paso.
+
+### Retos reales en DBA Lab: Manhattan frente a BFS
+
+| Reto | Manhattan (pasos) | BFS (pasos) |
+| :--- | :---: | :---: |
+| 5. Muro diagonal | 41 | 31 |
+| 7. Barrera en arco | 18 | 22 |
+| 8. Barrera en C | 29 | 31 |
+| 11. Barrera triangular | ❌ sin energía (250) | **191** |
+| 12. Recintos conectados | 723 | **211** |
+| 15. Bloques conectados | ❌ sin energía (330) | **270** |
+| 16. Disco con hendidura | ❌ sin energía (118) | **98** |
+| 17. Pasillos estrechos | ❌ sin energía (320) | **260** |
+
+En los demás retos (2, 3, 4, 6, 9, 10, 13 y 14) los pasos son idénticos. Con BFS se superan los 18 retos; con Manhattan fallaban 4 de los 16 medidos (el 18 y el 19 no llegaron a medirse con Manhattan).
 
 ---
 
@@ -214,7 +238,7 @@ Los **16 tests unitarios** (4 de `GridPositionTest`, 9 de `PathPlannerTest` y 3 
 > **Respuesta:** Llamar a $A^*$ en cada turno es innecesario y costoso en mapas grandes. Nuestro `PathPlanner` solo invoca a $A^*$ cuando se dan **dos condiciones a la vez**: (1) no tenemos pasos pendientes en la cola `currentPlan` y (2) ningún vecino libre adyacente nos acerca directamente a la meta. Mientras el camino hacia la meta está despejado, el agente avanza en $O(1)$ sin llamar a $A^*$; por ejemplo, en *Campo abierto* hace **0 llamadas a $A^*$**, y en *Muro diagonal* solo hace **1 llamada**.
 
 #### P2: ¿Por qué el avance directo sin $A^*$ no empeora la solución?
-> **Respuesta:** Por la consistencia de la heurística Manhattan. Si estamos a distancia $h$ de la meta y una casilla vecina libre y no visitada está a distancia $h - 1$, su coste estimado en $A^*$ es $f = g + h = 1 + (h - 1) = h$, que es la cota inferior matemática imposible de mejorar. Por tanto, es un atajo exacto en $O(1)$ que produce la misma decisión que $A^*$.
+> **Respuesta:** Por la consistencia de la heurística (la distancia BFS a la meta cambia como mucho en 1 entre casillas vecinas). Si estamos a distancia $h$ de la meta y una casilla vecina libre y no visitada está a distancia $h - 1$, su coste estimado en $A^*$ es $f = g + h = 1 + (h - 1) = h$, que es la cota inferior matemática imposible de mejorar. Por tanto, es un atajo exacto en $O(1)$ que produce la misma decisión que $A^*$.
 
 #### P3: ¿Cómo funciona vuestro $A^*$ "en base a lo conocido" y por qué sirve para mapas masivos?
 > **Respuesta:** En vez de expandir miles de casillas desconocidas (`UNKNOWN`) intentando llegar a una meta que puede estar a cientos de casillas en un mapa masivo, nuestro $A^*$ **solo expande celdas confirmadas como `FREE` en el `MentalMap`**. Su objetivo dentro del mapa conocido es llegar a la mejor **celda frontera** (una celda `FREE` vista por los bumpers, aún no pisada y colindante con `?`) minimizando $f(n) = g(n) + h(n)$. Así, el coste de cálculo solo depende de lo que el agente ha explorado y no del tamaño total del mundo.
@@ -223,7 +247,10 @@ Los **16 tests unitarios** (4 de `GridPositionTest`, 9 de `PathPlannerTest` y 3 
 > **Respuesta:** Cuando $A^*$ encuentra el camino por el mapa conocido desde el fondo de la trampa hasta la mejor frontera exterior (por ejemplo, 8 pasos), guarda toda la secuencia en la cola `currentPlan`. Como todas las casillas intermedias ya estaban visitadas y confirmadas como `FREE`, en los turnos siguientes el agente simplemente consume `currentPlan.poll()` en $O(1)$ sin volver a llamar a $A^*$ hasta llegar a la frontera.
 
 #### P5: ¿Cómo sabéis dónde está la meta si el mapa es desconocido?
-> **Respuesta:** El servidor DBA Lab ofrece el sensor `grid.target`, que consultamos una única vez al arrancar en `DbaClient.initGridState()`. Conocemos sus coordenadas $(x, y)$ para poder calcular la distancia Manhattan $h(n)$, pero no conocemos los obstáculos que hay entre medias; esos los descubrimos con `grid.bumpers`.
+> **Respuesta:** El servidor DBA Lab ofrece el sensor `grid.target`, que consultamos una única vez al arrancar en `DbaClient.initGridState()`. Conocemos sus coordenadas $(x, y)$ para poder calcular $h(n)$ con un BFS desde la meta, pero no conocemos los obstáculos que hay entre medias; esos los descubrimos con `grid.bumpers` y el BFS los rodea en cuanto aparecen.
+
+#### P5b: ¿Por qué no usáis la distancia Manhattan como heurística?
+> **Respuesta:** Porque ignora los muros que ya hemos descubierto. En el reto 11 un muro diagonal apoyado en el borde forma un embudo: las fronteras del fondo están cerca de la meta en línea recta, pero para llegar hay que salir y rodear. Con Manhattan el agente se metía en el embudo y se quedaba sin energía; con la distancia BFS (rodeando muros conocidos y suponiendo libre lo desconocido) esas fronteras valen lo que cuesta de verdad y el agente rodea a tiempo. Sigue siendo admisible y consistente porque nunca sobreestima. En DBA Lab se superan los 18 retos; con Manhattan fallaban el 11, el 15, el 16 y el 17.
 
 #### P6: ¿Por qué desempatáis en $A^*$ por menor $g(n)$ (frontera más cercana al agente) en vez de menor $h(n)$?
 > **Respuesta:** Porque en exploración online, al rodear un muro largo, la frontera que tienes justo delante ($g=1$) y la frontera que dejaste atrás en el otro extremo del muro ($g=5$) suelen empatar en el mismo $f = g + h$. Si desempatáramos por menor $h$, el agente daría media vuelta constantemente haciendo un efecto péndulo entre ambos extremos. Al desempatar por menor $g$, el agente sigue rodeando el muro en la dirección actual sin retrocesos innecesarios.

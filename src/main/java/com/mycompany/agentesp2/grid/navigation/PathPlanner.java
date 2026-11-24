@@ -39,10 +39,19 @@ import java.util.Set;
  *      currentPlan y la ejecuta paso a paso en O(1) sin volver a invocar A*.
  *    - Avance directo hacia frontera óptima: Si el agente no tiene un plan en
  *      cola y una celda frontera adyacente reduce directamente la distancia
- *      Manhattan a la meta (alcanzando la cota inferior teórica f = h(start),
+ *      estimada a la meta (alcanzando la cota inferior teórica f = h(start),
  *      g = 1, visits = 0), avanza hacia ella en O(1) sin lanzar A*.
  *
- * 3. ESCALABILIDAD A MAPAS MASIVOS:
+ * 3. HEURÍSTICA QUE TIENE EN CUENTA LOS MUROS CONOCIDOS:
+ *    h(n) es la distancia más corta de n a la meta rodeando los muros ya
+ *    descubiertos y suponiendo libre lo desconocido. Se calcula con un BFS
+ *    desde la meta antes de decidir. La distancia Manhattan ignoraba los muros:
+ *    en un embudo (reto 11, barrera triangular) las fronteras del fondo parecían
+ *    cercanas a la meta y el agente se quedaba sin energía explorándolas.
+ *    Sigue siendo admisible y consistente, porque lo desconocido se supone
+ *    libre y nunca sobreestima el camino real.
+ *
+ * 4. ESCALABILIDAD A MAPAS MASIVOS:
  *    El coste computacional depende únicamente de las celdas descubiertas y no
  *    del tamaño total del mapa (10x10, 500x500 o mayor).
  */
@@ -60,6 +69,12 @@ public class PathPlanner {
     /** Contador estadístico del total de nodos expandidos por A* durante toda la ejecución */
     private int totalExpandedNodes = 0;
 
+    /** Valor de h para celdas desde las que la meta es inalcanzable según lo conocido */
+    private static final int UNREACHABLE = Integer.MAX_VALUE / 4;
+
+    /** h(n) de cada celda: distancia BFS hasta la meta rodeando los muros conocidos */
+    private final Map<GridPosition, Integer> distanceToTarget = new HashMap<>();
+
     /**
      * Estructura interna de un nodo del árbol de búsqueda A* sobre el mapa conocido.
      */
@@ -68,7 +83,7 @@ public class PathPlanner {
         final SearchNode parent;               // Nodo predecesor en el camino
         final GridAction actionFromParent;     // Acción cardinal que llevó a este nodo
         final int g;                           // Coste real acumulado por el mapa conocido desde start
-        final int h;                           // Heurística Manhattan estimada desde esta celda hasta la meta
+        final int h;                           // Heurística: distancia BFS hasta la meta rodeando muros conocidos
         final int f;                           // Coste total estimado: f(n) = g(n) + h(n)
         final int visits;                      // Número de veces que el agente ha pisado esta casilla
         final int unknownNeighbors;            // Ganancia de información esperada (vecinos UNKNOWN, Slide 89)
@@ -89,7 +104,7 @@ public class PathPlanner {
 
         /**
          * Ordenación canónica para A* basado en lo conocido (Fronteras - Tema 2, Slides 49 y 89):
-         * 1. Menor coste total f(n) = g(n) + h(n) (Criterio combinado: coste conocido + distancia Manhattan a EVA).
+         * 1. Menor coste total f(n) = g(n) + h(n) (Criterio combinado: coste conocido + distancia estimada a EVA).
          * 2. Desempate: Menor distancia real g(n) desde el agente (frontera más cercana, evita retrocesos).
          * 3. Desempate: Menor número de visitas previas (prioriza fronteras vírgenes visits=0).
          * 4. Desempate: Mayor información esperada (más vecinos UNKNOWN por descubrir, Slide 89).
@@ -140,6 +155,14 @@ public class PathPlanner {
             return Collections.emptyList();
         }
 
+        computeDistances(target, mentalMap);
+        return searchKnownMap(start, target, mentalMap);
+    }
+
+    /**
+     * Búsqueda A* sobre las celdas FREE conocidas. Requiere que distanceToTarget esté calculado.
+     */
+    private List<GridAction> searchKnownMap(GridPosition start, GridPosition target, MentalMap mentalMap) {
         replanCount++;
 
         // --- 2. ESTRUCTURAS DE DATOS DE BÚSQUEDA A* EN EL GRAFO CONOCIDO ---
@@ -153,7 +176,7 @@ public class PathPlanner {
                 null,
                 null,
                 0,
-                start.manhattanDistance(target),
+                h(start),
                 mentalMap.getVisitCount(start),
                 mentalMap.countUnknownNeighbors(start),
                 seqCounter++
@@ -168,8 +191,10 @@ public class PathPlanner {
             // Condición de parada en base a lo conocido:
             // - Hemos llegado a la meta G, o
             // - Hemos llegado a la mejor celda FRONTERA conocida (FREE, no visitada y junto a terreno UNKNOWN).
+            //   Las fronteras desde las que la meta es inalcanzable no cuentan: explorarlas no acerca a nada.
             if (!current.position.equals(start)
-                    && (current.position.equals(target) || mentalMap.isFrontier(current.position))) {
+                    && (current.position.equals(target)
+                        || (mentalMap.isFrontier(current.position) && current.h < UNREACHABLE))) {
                 return reconstructActions(current);
             }
 
@@ -191,7 +216,7 @@ public class PathPlanner {
 
                 if (previousBestG == null || tentativeG < previousBestG) {
                     bestG.put(neighborPos, tentativeG);
-                    int h = neighborPos.manhattanDistance(target);
+                    int h = h(neighborPos);
                     int visits = mentalMap.getVisitCount(neighborPos);
                     int unknownNeighbors = mentalMap.countUnknownNeighbors(neighborPos);
 
@@ -235,7 +260,10 @@ public class PathPlanner {
             currentPlan.clear();
         }
 
-        // 2. Avance directo en O(1) si existe una frontera inmediata que reduce la distancia Manhattan a la meta
+        // Sin plan válido: recalcular h con los muros descubiertos hasta ahora
+        computeDistances(target, mentalMap);
+
+        // 2. Avance directo en O(1) si existe una frontera inmediata que reduce la distancia estimada a la meta
         GridAction directAction = findDirectForwardFrontier(start, target, mentalMap);
         if (directAction != null) {
             expectedPosition = start.neighbor(directAction);
@@ -243,7 +271,9 @@ public class PathPlanner {
         }
 
         // 3. Planificar con A* sobre el mapa conocido hasta la mejor frontera (o hasta la meta)
-        List<GridAction> newPlan = findPath(start, target, mentalMap);
+        List<GridAction> newPlan = mentalMap.isTransitable(target)
+                ? searchKnownMap(start, target, mentalMap)
+                : Collections.emptyList();
         if (newPlan.isEmpty()) {
             expectedPosition = null;
             return Optional.empty();
@@ -257,14 +287,14 @@ public class PathPlanner {
 
     /**
      * Comprueba en O(1) si alguno de los 4 vecinos cardinales conocidos como FREE es la meta o una frontera
-     * no visitada que reduce directamente la distancia Manhattan h(n) = h(start) - 1.
-     * Por consistencia de la heurística Manhattan, dicho vecino alcanza el mínimo global teórico f = h(start) y g = 1.
+     * no visitada que reduce directamente la distancia estimada h(n) = h(start) - 1.
+     * Por consistencia de la heurística, dicho vecino alcanza el mínimo global teórico f = h(start) y g = 1.
      */
     private GridAction findDirectForwardFrontier(GridPosition start, GridPosition target, MentalMap mentalMap) {
         if (!mentalMap.isTransitable(target)) {
             return null;
         }
-        int currentH = start.manhattanDistance(target);
+        int currentH = h(start);
         GridAction bestAction = null;
         int bestUnknownNeighbors = -1;
 
@@ -276,7 +306,7 @@ public class PathPlanner {
             if (neighbor.equals(target)) {
                 return action;
             }
-            if (neighbor.manhattanDistance(target) < currentH && mentalMap.isFrontier(neighbor)) {
+            if (h(neighbor) < currentH && mentalMap.isFrontier(neighbor)) {
                 int unknown = mentalMap.countUnknownNeighbors(neighbor);
                 if (unknown > bestUnknownNeighbors) {
                     bestUnknownNeighbors = unknown;
@@ -285,6 +315,44 @@ public class PathPlanner {
             }
         }
         return bestAction;
+    }
+
+    /**
+     * Calcula h(n) para todas las celdas: BFS desde la meta que atraviesa cualquier celda que no sea un muro
+     * conocido (lo desconocido se supone libre). Se limita al rectángulo de lo conocido más un margen de una
+     * casilla, suficiente para rodear cualquier muro descubierto.
+     */
+    private void computeDistances(GridPosition target, MentalMap mentalMap) {
+        distanceToTarget.clear();
+        int minX = Math.min(mentalMap.getMinX(), target.getX()) - 1;
+        int maxX = Math.max(mentalMap.getMaxX(), target.getX()) + 1;
+        int minY = Math.min(mentalMap.getMinY(), target.getY()) - 1;
+        int maxY = Math.max(mentalMap.getMaxY(), target.getY()) + 1;
+
+        Queue<GridPosition> queue = new ArrayDeque<>();
+        distanceToTarget.put(target, 0);
+        queue.add(target);
+        while (!queue.isEmpty()) {
+            GridPosition current = queue.poll();
+            int next = distanceToTarget.get(current) + 1;
+            for (GridAction action : GridAction.values()) {
+                GridPosition neighbor = current.neighbor(action);
+                if (neighbor.getX() < minX || neighbor.getX() > maxX
+                        || neighbor.getY() < minY || neighbor.getY() > maxY) {
+                    continue;
+                }
+                if (distanceToTarget.containsKey(neighbor) || !mentalMap.isTransitable(neighbor)) {
+                    continue;
+                }
+                distanceToTarget.put(neighbor, next);
+                queue.add(neighbor);
+            }
+        }
+    }
+
+    /** Heurística h(n): distancia BFS a la meta, o UNREACHABLE si los muros conocidos la aíslan */
+    private int h(GridPosition position) {
+        return distanceToTarget.getOrDefault(position, UNREACHABLE);
     }
 
     /**
