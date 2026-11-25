@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 import re
+import json
 
 TERMOSTATO = [
     (1, "Termostato - Control de temperatura"),
@@ -64,6 +65,15 @@ else:
 
 os.makedirs("logs_runs", exist_ok=True)
 results = []
+all_results = {}
+
+if os.path.exists("logs_runs/progreso_niveles.json"):
+    try:
+        with open("logs_runs/progreso_niveles.json", "r", encoding="utf-8") as pf:
+            for item in json.load(pf):
+                all_results[item["id"]] = item
+    except Exception:
+        pass
 
 print("================================================================================")
 print(f"   INICIANDO BATERÍA DE PRUEBAS EN VIVO: {title}   ")
@@ -111,7 +121,7 @@ for cid, cname in challenges:
     symbol = "✅" if "SUCCEEDED" in status or "TARGET_REACHED" in reason else "❌"
     print(f"    {symbol} Resultado: {status} ({reason}) | Pasos: {steps} | Energía: {energy} | Run ID: {run_id} | Tiempo: {elapsed:.1f}s")
     
-    results.append({
+    entry = {
         "id": cid,
         "name": cname,
         "run_id": run_id,
@@ -119,9 +129,24 @@ for cid, cname in challenges:
         "reason": reason,
         "steps": steps,
         "energy": energy,
-        "time": f"{elapsed:.1f}s"
-    })
-    
+        "time": f"{elapsed:.1f}s",
+        "symbol": symbol
+    }
+    results.append(entry)
+    all_results[cid] = entry
+    sys.stdout.flush()
+
+    merged_list = [all_results[k] for k in sorted(all_results.keys())]
+
+    with open("logs_runs/progreso_niveles.json", "w", encoding="utf-8") as pf:
+        json.dump(merged_list, pf, indent=2, ensure_ascii=False)
+
+    with open("logs_runs/tabla_resultados.md", "w", encoding="utf-8") as mf:
+        mf.write("| ID | Nombre del Reto | Estado | Pasos | Energía | Run ID | Tiempo |\n")
+        mf.write("|:---:|:---|:---:|:---:|:---:|:---:|:---:|\n")
+        for r in merged_list:
+            mf.write(f"| {r['id']} | {r['name']} | {r['symbol']} {r['status']} | {r['steps']} | {r['energy']} | {r['run_id']} | {r['time']} |\n")
+
     time.sleep(1.0)
 
 print("\n" + "=" * 80)

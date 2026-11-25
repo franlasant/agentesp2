@@ -24,3 +24,4 @@ logs_fase2/
 logs_runs/
 *.log
 
+__pycache__/
